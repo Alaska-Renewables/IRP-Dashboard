@@ -22,7 +22,7 @@ st.set_page_config(
 # Page Navigation
 # -----------------------------
 st.sidebar.markdown("## Navigation")
-page = st.sidebar.selectbox("Select Page", ["📊 Main Results", "🔍 Sensitivity Analysis", "⚡ Generator Breakdown"])
+page = st.sidebar.selectbox("Select Page", ["📊 Main Results", "🔍 Sensitivity Analysis", "⚡ Generator Breakdown", "⛽ Fuel Price Projections"])
 
 # Configuration Management
 # -----------------------------
@@ -242,6 +242,55 @@ def capital_recovery_factor(rate, life_years):
         return 1.0 / n
     return (r * (1 + r) ** n) / ((1 + r) ** n - 1)
 
+def fuel_year_columns(fuel_df):
+    """Return the year columns of a fuel price DataFrame, sorted ascending."""
+    years = []
+    for c in fuel_df.columns:
+        if str(c).strip() == "Fuel":
+            continue
+        try:
+            years.append(int(str(c).strip()))
+        except ValueError:
+            continue
+    return sorted(years)
+
+def build_fuel_price_map(fuel_df):
+    """Build dict: fuel -> {year:int -> price:float} from a Fuel x Year price table.
+    Interior gaps are linearly interpolated; missing values are handled per-fuel."""
+    years = fuel_year_columns(fuel_df)
+    col_lookup = {y: c for c in fuel_df.columns for y in years if str(c).strip() == str(y)}
+    result = {}
+    for _, row in fuel_df.iterrows():
+        fuel = str(row["Fuel"])
+        series = pd.Series({y: to_float(row[col_lookup[y]]) for y in years})
+        if series.notna().any():
+            series = series.interpolate(limit_direction="both")
+        result[fuel] = series.to_dict()
+    return result
+
+def get_fuel_price(fuel_price_map, fuel, year):
+    """Look up the fuel price for a given fuel/year, holding flat outside the table's year range."""
+    prices = fuel_price_map.get(fuel)
+    if not prices:
+        return np.nan
+    if year in prices:
+        return prices[year]
+    years_avail = sorted(prices.keys())
+    if not years_avail:
+        return np.nan
+    clipped = min(max(year, years_avail[0]), years_avail[-1])
+    return prices.get(clipped, np.nan)
+
+def make_default_fuel_df(start_yr=2024, end_yr=2055):
+    """Example year-by-year fuel price projections ($/MMBtu), escalated from 2024 base values."""
+    fuels = ["gas","diesel","naphtha","coal","landfill","hydro","wind","solar","geo","slack"]
+    base_2024 = {"gas":12,"diesel":20,"naphtha":19,"coal":5,"landfill":0,"hydro":0,"wind":0,"solar":0,"geo":0,"slack":0}
+    esc_rate = 0.025
+    data = {"Fuel": fuels}
+    for y in range(start_yr, end_yr + 1):
+        data[str(y)] = [round(base_2024[f] * ((1 + esc_rate) ** (y - 2024)), 4) for f in fuels]
+    return pd.DataFrame(data)
+
 def safe_strip_list(cell):
     """Parse comma-separated strings like 'Fire_Island, Eva_Creek' to list."""
     if pd.isna(cell):
@@ -270,7 +319,7 @@ st.sidebar.markdown("**1) Upload operations (per generator per scenario)**")
 ops_file = st.sidebar.file_uploader("Operations file (CSV or Excel)", type=["csv","xlsx","xls"], key="ops")
 st.sidebar.markdown("**2) Upload generator cost inputs**")
 cost_file = st.sidebar.file_uploader("Generator costs (CSV or Excel)", type=["csv","xlsx","xls"], key="costs")
-st.sidebar.markdown("**3) Upload base year fuel prices**")
+st.sidebar.markdown("**3) Upload year-by-year fuel price projections**")
 fuel_file = st.sidebar.file_uploader("Fuel prices (CSV or Excel)", type=["csv","xlsx","xls"], key="fuel")
 
 # Reset filters when new data is uploaded to show all scenarios by default
@@ -535,16 +584,12 @@ else:
     fuel_df = load_any(fuel_file)
     
 if fuel_df is None:
-    fuel_df = pd.DataFrame({
-        "Fuel":["gas","diesel","naphtha","coal","landfill","hydro","wind","solar","geo","slack"],
-        "2024 Fuel cost ($/MMBtu)":[12,20,19,5,0,0,0,0,0,0],
-        "Fuel escalation rate (%/yr)":["2.5%"]*10
-    })
+    fuel_df = make_default_fuel_df()
 
 # Standardize column names a bit
 ops_df.columns = [c.strip() for c in ops_df.columns]
 cost_df.columns = [c.strip() for c in cost_df.columns]
-fuel_df.columns = [c.strip() for c in fuel_df.columns]
+fuel_df.columns = [str(c).strip() for c in fuel_df.columns]
 
 # Clear the loaded dataframes from session state after use
 if 'loaded_cost_df' in st.session_state:
@@ -587,14 +632,10 @@ if st.session_state.get('force_data_reload', False):
     # Reload original fuel data from file (or fallback to example data)
     if fuel_file is not None:
         fuel_df = load_any(fuel_file)
-        fuel_df.columns = [c.strip() for c in fuel_df.columns]
+        fuel_df.columns = [str(c).strip() for c in fuel_df.columns]
     else:
-        fuel_df = pd.DataFrame({
-            "Fuel":["gas","diesel","naphtha","coal","landfill","hydro","wind","solar","geo","slack"],
-            "2024 Fuel cost ($/MMBtu)":[12,20,19,5,0,0,0,0,0,0],
-            "Fuel escalation rate (%/yr)":["2.5%"]*10
-        })
-        fuel_df.columns = [c.strip() for c in fuel_df.columns]
+        fuel_df = make_default_fuel_df()
+        fuel_df.columns = [str(c).strip() for c in fuel_df.columns]
     
     # Clear the flag
     del st.session_state.force_data_reload
@@ -694,7 +735,7 @@ if use_wind_override or use_solar_override:
 st.markdown("### Cost Inputs (editable)")
 with st.expander("Generator Cost Inputs"):
     edited_cost = st.data_editor(cost_df, use_container_width=True, num_rows="dynamic", key=gen_costs_key)
-with st.expander("Fuel Costs (base year)"):
+with st.expander("Fuel Price Projections ($/MMBtu by year)"):
     edited_fuel = st.data_editor(fuel_df, use_container_width=True, num_rows="dynamic", key=fuel_costs_key)
 
 cost_df = edited_cost.copy()
@@ -710,11 +751,13 @@ for col in ["Non-fuel var cost escalation rate (%/yr)",
     if col in cost_df.columns:
         cost_df[col] = cost_df[col].apply(to_float)
 
-if "2024 Fuel cost ($/MMBtu)" in fuel_df.columns:
-    fuel_df["2024 Fuel cost ($/MMBtu)"] = fuel_df["2024 Fuel cost ($/MMBtu)"].apply(to_float)
+# Fuel price columns are year labels (e.g. "2024", "2025", ...)
+for col in fuel_df.columns:
+    if str(col).strip() != "Fuel":
+        fuel_df[col] = fuel_df[col].apply(to_float)
 
-if "Fuel escalation rate (%/yr)" in fuel_df.columns:
-    fuel_df["Fuel escalation rate (%/yr)"] = fuel_df["Fuel escalation rate (%/yr)"].apply(to_float)
+fuel_price_map = build_fuel_price_map(fuel_df)
+fuel_years_available = fuel_year_columns(fuel_df)
 
 # -----------------------------
 # Apply Wind & Solar Cost Overrides
@@ -883,14 +926,7 @@ if 'Bus' in selected and selected['Bus']:
             to ensure accurate regional cost analysis.
             """)
 
-# Create fuel mapping (needed by both pages)
-fuel_map = dict(zip(fuel_df["Fuel"].astype(str), fuel_df["2024 Fuel cost ($/MMBtu)"]))
-
-# Create fuel escalation mapping by fuel type
-if "Fuel escalation rate (%/yr)" in fuel_df.columns:
-    fuel_esc_map = dict(zip(fuel_df["Fuel"].astype(str), fuel_df["Fuel escalation rate (%/yr)"]))
-else:
-    fuel_esc_map = {}
+# fuel_price_map (fuel -> {year -> $/MMBtu}) was already built above from the edited fuel_df
 
 # Shared data processing for both pages
 # Merge ops with generator cost inputs (by Generator; fall back on Carrier for fuel price)
@@ -905,15 +941,12 @@ gen_cost = cost_df.rename(columns={
 
 ops_f = ops_f.merge(gen_cost, on=["Generator","Carrier"], how="left", validate="m:1")
 
-# Map fuel escalation rates to operations data by Carrier
-ops_f["fuel_esc"] = ops_f["Carrier"].astype(str).map(fuel_esc_map).fillna(0.0)
-
 # Clean numerics
 for col in ["Scenario_Capacity_MW","Total_Generation_MWh","Fuel_Consumption_MMBtu"]:
     if col in ops_f.columns:
         ops_f[col] = ops_f[col].apply(to_float).fillna(0.0)
 
-for col in ["fuel_esc","nfu_esc","fpu_esc","nfu_2024","fpu_2024","capex_per_kw","disc_rate_gen"]:
+for col in ["nfu_esc","fpu_esc","nfu_2024","fpu_2024","capex_per_kw","disc_rate_gen"]:
     if col in ops_f.columns:
         ops_f[col] = ops_f[col].apply(to_float)
 
@@ -1086,21 +1119,14 @@ if page == "📊 Main Results":
                     'missing_data': missing_generators
                 })
     
-    # Check for missing fuel escalation rates
-    missing_fuel_esc = ops_f[ops_f["fuel_esc"].isna()]
-    if not missing_fuel_esc.empty:
-        missing_fuels = missing_fuel_esc[["Scenario", "Carrier"]].drop_duplicates()
-        missing_cost_data.append({
-            'cost_type': 'fuel_esc',
-            'missing_data': missing_fuels
-        })
-    
-    # Check for missing 2024 fuel costs ($/MMBtu)
-    # Get unique carriers from operations data that have fuel consumption > 0
+    # Check for missing fuel price projections covering the selected time horizon
+    horizon_years = list(range(int(start_year), int(end_year) + 1))
     fuel_consuming_carriers = ops_f[ops_f["Fuel_Consumption_MMBtu"] > 0]["Carrier"].unique()
     missing_fuel_costs = []
     for carrier in fuel_consuming_carriers:
-        if carrier not in fuel_map or pd.isna(fuel_map.get(carrier)):
+        prices = fuel_price_map.get(carrier)
+        missing_years = (not prices) or any(pd.isna(get_fuel_price(fuel_price_map, carrier, yr)) for yr in horizon_years)
+        if missing_years:
             # Find scenarios that use this fuel
             scenarios_using_fuel = ops_f[
                 (ops_f["Carrier"] == carrier) & 
@@ -1115,7 +1141,7 @@ if page == "📊 Main Results":
     if missing_fuel_costs:
         missing_fuel_cost_df = pd.DataFrame(missing_fuel_costs).drop_duplicates()
         missing_cost_data.append({
-            'cost_type': '2024_fuel_cost',
+            'cost_type': 'fuel_price_projection',
             'missing_data': missing_fuel_cost_df
         })
     
@@ -1128,12 +1154,9 @@ if page == "📊 Main Results":
                 cost_type = missing['cost_type']
                 missing_df = missing['missing_data']
                 
-                if cost_type == 'fuel_esc':
-                    st.markdown(f"**Missing Fuel Escalation Rates:**")
-                    st.markdown("The following fuels are missing escalation rates in the fuel cost file:")
-                elif cost_type == '2024_fuel_cost':
-                    st.markdown(f"**Missing 2024 Fuel Costs ($/MMBtu):**")
-                    st.markdown("The following fuels are missing 2024 fuel cost data in the fuel cost file:")
+                if cost_type == 'fuel_price_projection':
+                    st.markdown(f"**Missing Fuel Price Projections:**")
+                    st.markdown("The following fuels are missing year-by-year price data covering the selected time horizon in the fuel price file:")
                 else:
                     cost_name = {
                         'capex_per_kw': 'Capital Cost',
@@ -1230,7 +1253,6 @@ if page == "📊 Main Results":
         is_not_battery = np.array([c.lower() != "battery" for c in carriers], dtype=bool)
 
         # Cost parameters (per generator)
-        fuel_esc = sdf["fuel_esc"].fillna(0.0).values
         nfu_esc = sdf["nfu_esc"].fillna(0.0).values
         fpu_esc = sdf["fpu_esc"].fillna(0.0).values
         nfu_2024 = sdf["nfu_2024"].fillna(0.0).values
@@ -1239,8 +1261,6 @@ if page == "📊 Main Results":
         cap_cost_year = sdf["Capital cost year"].fillna(np.nan).values if "Capital cost year" in sdf.columns else np.full(len(sdf), np.nan)
         first_year = sdf["First year"].fillna(np.nan).values if "First year" in sdf.columns else np.full(len(sdf), np.nan)
         gen_disc_rate = sdf["disc_rate_gen"].fillna(global_discount_rate if use_global_discount else 0.05).values
-        # Fuel base prices (2024)
-        base_fuel_price = np.array([fuel_map.get(f, np.nan) for f in carriers], dtype=float)
 
         # Aggregate across years
         pv_cost_sum = 0.0
@@ -1277,9 +1297,9 @@ if page == "📊 Main Results":
             for j in range(len(sdf)):
                 r_j = (global_discount_rate if use_global_discount else gen_disc_rate[j])
 
-                # Fuel price escalation anchored to 2024
+                # Fuel price from year-by-year projection table
                 years_from_2024 = yr - 2024
-                fuel_price_y = escalate(base_fuel_price[j], fuel_esc[j], years_from_2024)
+                fuel_price_y = get_fuel_price(fuel_price_map, carriers[j], yr)
 
                 # Non-fuel variable and Fixed production escalation anchored to 2024
                 nfu_cost_y = escalate(nfu_2024[j], nfu_esc[j], years_from_2024)  # $/MWh
@@ -1769,7 +1789,7 @@ if page == "📊 Main Results":
                     combined_tab.to_excel(writer, index=False, sheet_name="All_Data")
                 st.download_button("Download results (Excel)", data=buffer.getvalue(), file_name="simulation_lcoe_dashboard_export.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            st.caption("Notes: LCOE uses PV(costs)/PV(generation) over the selected horizon. Fuel, non-fuel variable, and fixed production costs escalate annually from 2024 values using their per-generator escalation rates. CAPEX treatment is selectable (upfront or annualized with CRF). Generation and costs are discounted using the chosen scheme. Carrier panels use the base single-year operational data.")
+            st.caption("Notes: LCOE uses PV(costs)/PV(generation) over the selected horizon. Fuel costs use the year-by-year fuel price projections; non-fuel variable and fixed production costs escalate annually from 2024 values using their per-generator escalation rates. CAPEX treatment is selectable (upfront or annualized with CRF). Generation and costs are discounted using the chosen scheme. Carrier panels use the base single-year operational data.")
 
 elif page == "🔍 Sensitivity Analysis":
     # -----------------------------
@@ -1815,20 +1835,16 @@ elif page == "🔍 Sensitivity Analysis":
             
             # Fuel Cost Parameters
             st.markdown("*Fuel Cost Parameters:*")
+            st.caption("A multiplier is applied to the entire year-by-year price projection for the selected fuel.")
             available_fuels = fuel_df["Fuel"].unique()
-            fuel_cost_cols = [col for col in fuel_df.columns if col not in ["Fuel"]]
             for fuel in available_fuels:
-                for param in fuel_cost_cols:
-                    if st.checkbox(f"Fuel Cost - {fuel} {param}"):
-                        current_val = fuel_df[fuel_df["Fuel"] == fuel][param].iloc[0]
-                        current_val = to_float(current_val)
-                        selected_params.append({
-                            "type": "Fuel Cost",
-                            "param": param,
-                            "fuel": fuel,
-                            "current_val": current_val,
-                            "label": f"{param} ({fuel})"
-                        })
+                if st.checkbox(f"Fuel Price - {fuel}"):
+                    selected_params.append({
+                        "type": "Fuel Cost",
+                        "fuel": fuel,
+                        "current_val": 1.0,
+                        "label": f"Fuel Price ({fuel})"
+                    })
             
             # Wind Technology Parameters
             st.markdown("*Wind Technology Parameters:*")
@@ -1946,21 +1962,13 @@ elif page == "🔍 Sensitivity Analysis":
             elif param_type == "Fuel Cost":
                 available_fuels = fuel_df["Fuel"].unique()
                 selected_fuel = st.selectbox("Fuel", available_fuels)
-                
-                # Get available fuel cost columns
-                fuel_cost_cols = [col for col in fuel_df.columns if col not in ["Fuel"]]
-                selected_param = st.selectbox("Fuel Cost Parameter", fuel_cost_cols)
-                
-                # Get current value
-                current_val = fuel_df[fuel_df["Fuel"] == selected_fuel][selected_param].iloc[0]
-                current_val = to_float(current_val)
+                st.caption("A multiplier is applied to the entire year-by-year price projection for the selected fuel.")
                 
                 selected_params = [{
                     "type": "Fuel Cost",
-                    "param": selected_param,
                     "fuel": selected_fuel,
-                    "current_val": current_val,
-                    "label": f"{selected_param} ({selected_fuel})"
+                    "current_val": 1.0,
+                    "label": f"Fuel Price ({selected_fuel})"
                 }]
                 
             elif param_type == "Wind Technology Override":
@@ -2109,9 +2117,11 @@ elif page == "🔍 Sensitivity Analysis":
                             mod_cost_df.loc[mod_cost_df["Generator"] == selected_generator, selected_param] = test_val
                             
                     elif param_type == "Fuel Cost":
-                        selected_param = param_info['param']
                         selected_fuel = param_info['fuel']
-                        mod_fuel_df.loc[mod_fuel_df["Fuel"] == selected_fuel, selected_param] = test_val
+                        fuel_year_cols = [c for c in mod_fuel_df.columns if str(c).strip() != "Fuel"]
+                        fuel_mask = mod_fuel_df["Fuel"] == selected_fuel
+                        for yc in fuel_year_cols:
+                            mod_fuel_df.loc[fuel_mask, yc] = mod_fuel_df.loc[fuel_mask, yc].apply(to_float) * mult
                         
                     elif param_type == "Wind Technology Override":
                         selected_param = param_info['param']
@@ -2171,11 +2181,9 @@ elif page == "🔍 Sensitivity Analysis":
                     if col in mod_cost_df.columns:
                         mod_cost_df[col] = mod_cost_df[col].apply(to_float)
                 
-                if "2024 Fuel cost ($/MMBtu)" in mod_fuel_df.columns:
-                    mod_fuel_df["2024 Fuel cost ($/MMBtu)"] = mod_fuel_df["2024 Fuel cost ($/MMBtu)"].apply(to_float)
-                
-                if "Fuel escalation rate (%/yr)" in mod_fuel_df.columns:
-                    mod_fuel_df["Fuel escalation rate (%/yr)"] = mod_fuel_df["Fuel escalation rate (%/yr)"].apply(to_float)
+                for col in mod_fuel_df.columns:
+                    if str(col).strip() != "Fuel":
+                        mod_fuel_df[col] = mod_fuel_df[col].apply(to_float)
                 
                 # Recalculate LCOE for all scenarios with modified costs
                 gen_cost_mod = mod_cost_df.rename(columns={
@@ -2196,19 +2204,10 @@ elif page == "🔍 Sensitivity Analysis":
                         base_ops = base_ops.drop(columns=[c])
 
                 ops_mod = base_ops.merge(gen_cost_mod, on=["Generator","Carrier"], how="left", validate="m:1")
-                fuel_map_mod = dict(zip(mod_fuel_df["Fuel"].astype(str), mod_fuel_df["2024 Fuel cost ($/MMBtu)"]))
-                
-                # Create fuel escalation mapping for sensitivity analysis
-                if "Fuel escalation rate (%/yr)" in mod_fuel_df.columns:
-                    fuel_esc_map_mod = dict(zip(mod_fuel_df["Fuel"].astype(str), mod_fuel_df["Fuel escalation rate (%/yr)"]))
-                else:
-                    fuel_esc_map_mod = {}
-                
-                # Map fuel escalation rates to operations data by Carrier
-                ops_mod["fuel_esc"] = ops_mod["Carrier"].astype(str).map(fuel_esc_map_mod).fillna(0.0)
+                fuel_price_map_mod = build_fuel_price_map(mod_fuel_df)
 
                 # Clean numerics
-                for col in ["fuel_esc","nfu_esc","fpu_esc","nfu_2024","fpu_2024","capex_per_kw","disc_rate_gen"]:
+                for col in ["nfu_esc","fpu_esc","nfu_2024","fpu_2024","capex_per_kw","disc_rate_gen"]:
                     if col in ops_mod.columns:
                         ops_mod[col] = ops_mod[col].apply(to_float)
 
@@ -2223,7 +2222,6 @@ elif page == "🔍 Sensitivity Analysis":
                     carriers = sdf["Carrier"].astype(str).values
 
                     # Cost parameters (per generator)
-                    fuel_esc = sdf["fuel_esc"].fillna(0.0).values if "fuel_esc" in sdf.columns else np.zeros(len(sdf))
                     nfu_esc = sdf["nfu_esc"].fillna(0.0).values if "nfu_esc" in sdf.columns else np.zeros(len(sdf))
                     fpu_esc = sdf["fpu_esc"].fillna(0.0).values if "fpu_esc" in sdf.columns else np.zeros(len(sdf))
                     nfu_2024 = sdf["nfu_2024"].fillna(0.0).values if "nfu_2024" in sdf.columns else np.zeros(len(sdf))
@@ -2232,7 +2230,6 @@ elif page == "🔍 Sensitivity Analysis":
                     cap_cost_year = sdf["Capital cost year"].fillna(np.nan).values if "Capital cost year" in sdf.columns else np.full(len(sdf), np.nan)
                     first_year = sdf["First year"].fillna(np.nan).values if "First year" in sdf.columns else np.full(len(sdf), np.nan)
                     gen_disc_rate = sdf["disc_rate_gen"].fillna(global_discount_rate if use_global_discount else 0.05).values if "disc_rate_gen" in sdf.columns else np.full(len(sdf), global_discount_rate if use_global_discount else 0.05)
-                    base_fuel_price = np.array([fuel_map_mod.get(f, np.nan) for f in carriers], dtype=float)
 
                     pv_cost_sum = 0.0
                     pv_gen_sum = 0.0
@@ -2263,7 +2260,7 @@ elif page == "🔍 Sensitivity Analysis":
                             r_j = (global_discount_rate if use_global_discount else gen_disc_rate[j])
 
                             years_from_2024 = yr - 2024
-                            fuel_price_y = escalate(base_fuel_price[j], fuel_esc[j], years_from_2024)
+                            fuel_price_y = get_fuel_price(fuel_price_map_mod, carriers[j], yr)
                             nfu_cost_y = escalate(nfu_2024[j], nfu_esc[j], years_from_2024)
                             fpu_cost_y = escalate(fpu_2024[j], fpu_esc[j], years_from_2024)
 
@@ -2528,7 +2525,6 @@ elif page == "⚡ Generator Breakdown":
         carriers = sdf["Carrier"].astype(str).values
 
         # Cost parameters (per generator)
-        fuel_esc = sdf["fuel_esc"].fillna(0.0).values
         nfu_esc = sdf["nfu_esc"].fillna(0.0).values
         fpu_esc = sdf["fpu_esc"].fillna(0.0).values
         nfu_2024 = sdf["nfu_2024"].fillna(0.0).values
@@ -2537,8 +2533,6 @@ elif page == "⚡ Generator Breakdown":
         cap_cost_year = sdf["Capital cost year"].fillna(np.nan).values if "Capital cost year" in sdf.columns else np.full(len(sdf), np.nan)
         first_year = sdf["First year"].fillna(np.nan).values if "First year" in sdf.columns else np.full(len(sdf), np.nan)
         gen_disc_rate = sdf["disc_rate_gen"].fillna(global_discount_rate if use_global_discount else 0.05).values
-        # Fuel base prices (2024)
-        base_fuel_price = np.array([fuel_map.get(f, np.nan) for f in carriers], dtype=float)
 
         # Aggregate across years using present value methodology (same as main page)
         pv_cost_sum = 0.0
@@ -2572,9 +2566,9 @@ elif page == "⚡ Generator Breakdown":
             for j in range(len(sdf)):
                 r_j = (global_discount_rate if use_global_discount else gen_disc_rate[j])
 
-                # Fuel price escalation anchored to 2024
+                # Fuel price from year-by-year projection table
                 years_from_2024 = yr - 2024
-                fuel_price_y = escalate(base_fuel_price[j], fuel_esc[j], years_from_2024)
+                fuel_price_y = get_fuel_price(fuel_price_map, carriers[j], yr)
 
                 # Non-fuel variable and Fixed production escalation anchored to 2024
                 nfu_cost_y = escalate(nfu_2024[j], nfu_esc[j], years_from_2024)  # $/MWh
@@ -2643,10 +2637,7 @@ elif page == "⚡ Generator Breakdown":
                 fpu_2024 = gen_row.get("fpu_2024", 0)
                 nfu_esc = gen_row.get("nfu_esc", 0)
                 fpu_esc = gen_row.get("fpu_esc", 0)
-                fuel_esc = gen_row.get("fuel_esc", 0)
                 
-                # Get base fuel price and other parameters
-                base_fuel_price = fuel_map.get(carrier, 0)
                 cap_cost_year = gen_row.get("Capital cost year", start_year)
                 first_year_gen = gen_row.get("First year", start_year)
                 
@@ -2680,9 +2671,9 @@ elif page == "⚡ Generator Breakdown":
                 
                 # Yearly O&M + Fuel costs (same methodology as main page)
                 for t, yr in enumerate(years):
-                    # Fuel price escalation anchored to 2024
+                    # Fuel price from year-by-year projection table
                     years_from_2024 = yr - 2024
-                    fuel_price_y = escalate(base_fuel_price, fuel_esc, years_from_2024)
+                    fuel_price_y = get_fuel_price(fuel_price_map, carrier, yr)
                     
                     # Non-fuel variable and Fixed production escalation anchored to 2024
                     nfu_cost_y = escalate(nfu_2024, nfu_esc, years_from_2024)  # $/MWh
@@ -2863,6 +2854,76 @@ elif page == "⚡ Generator Breakdown":
             st.warning("No generators with positive generation found for this scenario.")
     else:
         st.error("Selected scenario not found in data.")
+
+elif page == "⛽ Fuel Price Projections":
+    st.markdown("## Fuel Price Projections")
+    st.markdown("Year-by-year fuel price inputs ($/MMBtu), as edited in the **Fuel Price Projections** table above. "
+                "Years within the selected time horizon (start to end year) are highlighted.")
+
+    fuel_years = fuel_year_columns(fuel_df)
+    if not fuel_years:
+        st.warning("No year columns found in the fuel price table. Add year columns (e.g. '2024', '2025', ...) to the Fuel Price Projections input.")
+    else:
+        horizon_years = set(range(int(start_year), int(end_year) + 1))
+        year_cols_sorted = [str(y) for y in fuel_years]
+
+        table_df = fuel_df[["Fuel"] + year_cols_sorted].copy()
+        for c in year_cols_sorted:
+            table_df[c] = table_df[c].apply(to_float)
+
+        # -----------------------------
+        # Table with time horizon highlighted
+        # -----------------------------
+        st.markdown("### Fuel Price Table")
+
+        def highlight_horizon_cols(col):
+            if int(col.name) in horizon_years:
+                return ["background-color: #fff3b0"] * len(col)
+            return [""] * len(col)
+
+        styled_table = table_df.style.apply(highlight_horizon_cols, subset=year_cols_sorted, axis=0).format(
+            {c: "{:.2f}" for c in year_cols_sorted}
+        )
+        st.dataframe(styled_table, use_container_width=True)
+        st.caption(f"Highlighted columns ({start_year}–{end_year}) fall within the selected time horizon.")
+
+        # -----------------------------
+        # Plot with time horizon highlighted
+        # -----------------------------
+        st.markdown("### Fuel Price Trends")
+
+        plot_fuels = st.multiselect(
+            "Fuels to plot",
+            options=table_df["Fuel"].tolist(),
+            default=table_df["Fuel"].tolist()
+        )
+
+        if plot_fuels:
+            fig_fuel = go.Figure()
+            for _, row in table_df[table_df["Fuel"].isin(plot_fuels)].iterrows():
+                fig_fuel.add_trace(go.Scatter(
+                    x=fuel_years,
+                    y=[row[str(y)] for y in fuel_years],
+                    mode="lines+markers",
+                    name=str(row["Fuel"])
+                ))
+
+            # Highlight the time horizon as a shaded band
+            fig_fuel.add_vrect(
+                x0=start_year, x1=end_year,
+                fillcolor="orange", opacity=0.15, line_width=0,
+                annotation_text="Time Horizon", annotation_position="top left"
+            )
+
+            fig_fuel.update_layout(
+                xaxis_title="Year",
+                yaxis_title="Fuel Price ($/MMBtu)",
+                legend_title="Fuel",
+                height=550
+            )
+            st.plotly_chart(fig_fuel, use_container_width=True)
+        else:
+            st.info("Select at least one fuel to plot.")
 
 # Add final spacing to ensure content is accessible
 st.markdown("")
