@@ -33,14 +33,15 @@ st.sidebar.markdown("## 💾 Configuration Management")
 if 'saved_configs' not in st.session_state:
     st.session_state.saved_configs = {}
 
-def save_current_config(config_name, params, cost_df=None, fuel_df=None):
-    """Save current configuration to session state with optional cost/fuel data."""
+def save_current_config(config_name, params, cost_df=None, fuel_df=None, cpi_df=None):
+    """Save current configuration to session state with optional input data."""
     config = {
         'name': config_name,
         'timestamp': datetime.datetime.now().isoformat(),
         'parameters': params.copy(),
         'cost_data': serialize_dataframe_to_json(cost_df),
-        'fuel_data': serialize_dataframe_to_json(fuel_df)
+        'fuel_data': serialize_dataframe_to_json(fuel_df),
+        'cpi_data': serialize_dataframe_to_json(cpi_df)
     }
     st.session_state.saved_configs[config_name] = config
     return config
@@ -52,7 +53,8 @@ def load_config(config_name):
         return {
             'parameters': config.get('parameters', {}),
             'cost_data': config.get('cost_data', None),
-            'fuel_data': config.get('fuel_data', None)
+            'fuel_data': config.get('fuel_data', None),
+            'cpi_data': config.get('cpi_data', None)
         }
     return None
 
@@ -159,7 +161,9 @@ with st.sidebar.expander("🔧 Save & Load Configurations"):
             'use_global_discount': True,
             'global_discount_rate': 5.0,
             'capex_treatment_index': 1,
-            'asset_life_years': 30
+            'asset_life_years': 30,
+            'dollar_mode': 'Nominal dollars',
+            'real_dollar_year': 2030
         }
         
         # Reset sidebar input session states
@@ -197,6 +201,8 @@ with st.sidebar.expander("🔧 Save & Load Configurations"):
             del st.session_state['gen_costs']
         if 'fuel_costs' in st.session_state:
             del st.session_state['fuel_costs']
+        if 'cpi_costs' in st.session_state:
+            del st.session_state['cpi_costs']
         
         # Set flag to force reload of original data files
         st.session_state.force_data_reload = True
@@ -287,6 +293,43 @@ def make_default_fuel_df(start_yr=2024, end_yr=2055):
         data[fuel] = [round(base_2024[fuel] * ((1 + esc_rate) ** (year - 2024)), 4) for year in data["Year"]]
     return pd.DataFrame(data)
 
+def make_default_cpi_df(start_yr=2024, end_yr=2055):
+    """Example annual CPI inflation forecast, expressed as percent per year."""
+    return pd.DataFrame({
+        "Year": list(range(start_yr, end_yr + 1)),
+        "CPI Inflation Rate (%)": [2.5] * (end_yr - start_yr + 1)
+    })
+
+def build_cpi_index(cpi_df):
+    """Build a CPI index relative to the first forecast year from annual inflation rates."""
+    if cpi_df is None or "Year" not in cpi_df.columns:
+        return {}
+    rate_col = next((c for c in cpi_df.columns if str(c).strip() != "Year"), None)
+    if rate_col is None:
+        return {}
+    rates = pd.DataFrame({
+        "Year": pd.to_numeric(cpi_df["Year"], errors="coerce"),
+        "Rate": cpi_df[rate_col].apply(to_float)
+    }).dropna(subset=["Year"]).groupby("Year")["Rate"].first().sort_index()
+    if rates.empty or rates.isna().all():
+        return {}
+    rates = rates.interpolate(limit_direction="both").fillna(0.0)
+    if rates.abs().max() > 1.0:
+        rates = rates / 100.0
+    index = {}
+    first_year = int(rates.index.min())
+    index[first_year] = 1.0
+    for year in range(first_year + 1, int(rates.index.max()) + 1):
+        index[year] = index[year - 1] * (1.0 + float(rates.get(year, 0.0)))
+    return index
+
+def cpi_value(cpi_index, year):
+    """Return the CPI index for a year, holding the nearest endpoint outside the forecast."""
+    if not cpi_index:
+        return np.nan
+    years = sorted(cpi_index)
+    return cpi_index[min(max(int(year), years[0]), years[-1])]
+
 def safe_strip_list(cell):
     """Parse comma-separated strings like 'Fire_Island, Eva_Creek' to list."""
     if pd.isna(cell):
@@ -317,6 +360,8 @@ st.sidebar.markdown("**2) Upload generator cost inputs**")
 cost_file = st.sidebar.file_uploader("Generator costs (CSV or Excel)", type=["csv","xlsx","xls"], key="costs")
 st.sidebar.markdown("**3) Upload year-by-year fuel price projections**")
 fuel_file = st.sidebar.file_uploader("Fuel prices (CSV or Excel)", type=["csv","xlsx","xls"], key="fuel")
+st.sidebar.markdown("**4) Upload CPI inflation forecast**")
+cpi_file = st.sidebar.file_uploader("CPI forecast (CSV or Excel)", type=["csv","xlsx","xls"], key="cpi")
 
 # Reset filters when new data is uploaded to show all scenarios by default
 if ops_file is not None:
@@ -357,6 +402,16 @@ if fuel_file is not None:
         if 'fuel_costs' in st.session_state:
             del st.session_state['fuel_costs']
 
+# Reset CPI editor data when new CPI files are uploaded
+if cpi_file is not None:
+    current_cpi_filename = getattr(cpi_file, 'name', None)
+    if 'last_cpi_filename' not in st.session_state:
+        st.session_state.last_cpi_filename = None
+    if st.session_state.last_cpi_filename != current_cpi_filename:
+        st.session_state.last_cpi_filename = current_cpi_filename
+        if 'cpi_costs' in st.session_state:
+            del st.session_state['cpi_costs']
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Time Horizon & Finance**")
 
@@ -367,7 +422,9 @@ config_defaults = {
     'use_global_discount': True,
     'global_discount_rate': 5.0,
     'capex_treatment_index': 1,
-    'asset_life_years': 30
+    'asset_life_years': 30,
+    'dollar_mode': 'Nominal dollars',
+    'real_dollar_year': 2030
 }
 
 # Load configuration if requested
@@ -379,12 +436,15 @@ if 'load_config' in st.session_state:
         loaded_config = config_result['parameters']
         loaded_cost_data = config_result['cost_data']
         loaded_fuel_data = config_result['fuel_data']
+        loaded_cpi_data = config_result.get('cpi_data')
         
         # Restore cost and fuel DataFrames to session state
         if loaded_cost_data is not None:
             st.session_state.loaded_cost_df = deserialize_dataframe_from_json(loaded_cost_data)
         if loaded_fuel_data is not None:
             st.session_state.loaded_fuel_df = deserialize_dataframe_from_json(loaded_fuel_data)
+        if loaded_cpi_data is not None:
+            st.session_state.loaded_cpi_df = deserialize_dataframe_from_json(loaded_cpi_data)
         
         # Update session state with loaded values - Sidebar inputs
         st.session_state.start_year_input = loaded_config.get('start_year', config_defaults['start_year'])
@@ -393,6 +453,8 @@ if 'load_config' in st.session_state:
         st.session_state.global_discount_rate_input = loaded_config.get('global_discount_rate', config_defaults['global_discount_rate'])
         st.session_state.capex_treatment_input_index = loaded_config.get('capex_treatment_index', config_defaults['capex_treatment_index'])
         st.session_state.asset_life_years_input = loaded_config.get('asset_life_years', config_defaults['asset_life_years'])
+        st.session_state.dollar_mode_input = loaded_config.get('dollar_mode', config_defaults['dollar_mode'])
+        st.session_state.real_dollar_year_input = loaded_config.get('real_dollar_year', config_defaults['real_dollar_year'])
         
         # Wind override parameters
         st.session_state.wind_override_enabled = loaded_config.get('wind_override_enabled', False)
@@ -440,6 +502,10 @@ if 'capex_treatment_input_index' not in st.session_state:
     st.session_state.capex_treatment_input_index = config_defaults['capex_treatment_index']
 if 'asset_life_years_input' not in st.session_state:
     st.session_state.asset_life_years_input = config_defaults['asset_life_years']
+if 'dollar_mode_input' not in st.session_state:
+    st.session_state.dollar_mode_input = config_defaults['dollar_mode']
+if 'real_dollar_year_input' not in st.session_state:
+    st.session_state.real_dollar_year_input = config_defaults['real_dollar_year']
 
 # Input controls with configuration support
 start_year = st.sidebar.number_input(
@@ -485,6 +551,22 @@ asset_life_years = st.sidebar.number_input(
     value=st.session_state.asset_life_years_input, 
     step=1, key="asset_life_years_input"
 )
+
+st.sidebar.markdown("**Dollar Display**")
+dollar_mode = st.sidebar.radio(
+    "Display results in",
+    options=["Nominal dollars", "Real dollars"],
+    index=["Nominal dollars", "Real dollars"].index(st.session_state.dollar_mode_input),
+    key="dollar_mode_input"
+)
+real_dollar_year = st.session_state.real_dollar_year_input
+if dollar_mode == "Real dollars":
+    real_dollar_year = st.sidebar.number_input(
+        "Real-dollar year",
+        min_value=2000, max_value=2100,
+        value=int(st.session_state.real_dollar_year_input),
+        step=1, key="real_dollar_year_input"
+    )
 
 # Set default values for removed inputs
 repeat_ops_each_year = True
@@ -582,16 +664,27 @@ else:
 if fuel_df is None:
     fuel_df = make_default_fuel_df()
 
+if 'loaded_cpi_df' in st.session_state:
+    cpi_df = st.session_state.loaded_cpi_df
+else:
+    cpi_df = load_any(cpi_file)
+
+if cpi_df is None:
+    cpi_df = make_default_cpi_df()
+
 # Standardize column names a bit
 ops_df.columns = [c.strip() for c in ops_df.columns]
 cost_df.columns = [c.strip() for c in cost_df.columns]
 fuel_df.columns = [str(c).strip() for c in fuel_df.columns]
+cpi_df.columns = [str(c).strip() for c in cpi_df.columns]
 
 # Clear the loaded dataframes from session state after use
 if 'loaded_cost_df' in st.session_state:
     del st.session_state['loaded_cost_df']
 if 'loaded_fuel_df' in st.session_state:
     del st.session_state['loaded_fuel_df']
+if 'loaded_cpi_df' in st.session_state:
+    del st.session_state['loaded_cpi_df']
 
 # Force reload of original data if reset button was pressed
 if st.session_state.get('force_data_reload', False):
@@ -632,6 +725,13 @@ if st.session_state.get('force_data_reload', False):
     else:
         fuel_df = make_default_fuel_df()
         fuel_df.columns = [str(c).strip() for c in fuel_df.columns]
+
+    if cpi_file is not None:
+        cpi_df = load_any(cpi_file)
+        cpi_df.columns = [str(c).strip() for c in cpi_df.columns]
+    else:
+        cpi_df = make_default_cpi_df()
+        cpi_df.columns = [str(c).strip() for c in cpi_df.columns]
     
     # Clear the flag
     del st.session_state.force_data_reload
@@ -639,6 +739,7 @@ if st.session_state.get('force_data_reload', False):
 # Create dynamic editor keys to force refresh after reset
 gen_costs_key = f"gen_costs_{st.session_state.get('reset_counter', 0)}"
 fuel_costs_key = f"fuel_costs_{st.session_state.get('reset_counter', 0)}"
+cpi_costs_key = f"cpi_costs_{st.session_state.get('reset_counter', 0)}"
 
 # -----------------------------
 # Wind and Solar Cost Override Options
@@ -656,7 +757,9 @@ if 'pending_save' in st.session_state:
         'use_global_discount': use_global_discount,
         'global_discount_rate': global_discount_rate * 100.0,  # Store as percentage
         'capex_treatment_index': capex_treatment_options.index(capex_treatment),
-        'asset_life_years': asset_life_years
+        'asset_life_years': asset_life_years,
+        'dollar_mode': dollar_mode,
+        'real_dollar_year': int(real_dollar_year)
     }
 
 st.markdown("### 🔄 Wind & Solar Cost Override Options")
@@ -733,9 +836,13 @@ with st.expander("Generator Cost Inputs"):
     edited_cost = st.data_editor(cost_df, use_container_width=True, num_rows="dynamic", key=gen_costs_key)
 with st.expander("Fuel Price Projections ($/MMBtu by year)"):
     edited_fuel = st.data_editor(fuel_df, use_container_width=True, num_rows="dynamic", key=fuel_costs_key)
+with st.expander("CPI Inflation Forecast (%/yr)"):
+    st.caption("Use one row per year with columns Year and CPI Inflation Rate (%/yr). Values may be entered as 2.5 or 2.5%.")
+    edited_cpi = st.data_editor(cpi_df, use_container_width=True, num_rows="dynamic", key=cpi_costs_key)
 
 cost_df = edited_cost.copy()
 fuel_df = edited_fuel.copy()
+cpi_df = edited_cpi.copy()
 
 # Parse numeric columns
 for col in ["Non-fuel var cost escalation rate (%/yr)",
@@ -756,6 +863,27 @@ for col in fuel_df.columns:
 
 fuel_price_map = build_fuel_price_map(fuel_df)
 fuel_years_available = fuel_year_columns(fuel_df)
+
+if "Year" in cpi_df.columns:
+    cpi_df["Year"] = pd.to_numeric(cpi_df["Year"], errors="coerce").astype("Int64")
+for col in cpi_df.columns:
+    if str(col).strip() != "Year":
+        cpi_df[col] = cpi_df[col].apply(to_float)
+cpi_index = build_cpi_index(cpi_df)
+if dollar_mode == "Real dollars" and not cpi_index:
+    st.sidebar.warning("Real-dollar display requires a CPI forecast with a Year column and annual inflation rates.")
+
+calculation_dollar_year = int(start_year)
+if dollar_mode == "Real dollars" and cpi_index:
+    cpi_base = cpi_value(cpi_index, calculation_dollar_year)
+    cpi_display = cpi_value(cpi_index, real_dollar_year)
+    dollar_display_factor = cpi_display / cpi_base if cpi_base else 1.0
+else:
+    dollar_display_factor = 1.0
+
+dollar_label = "Nominal dollars"
+if dollar_mode == "Real dollars":
+    dollar_label = f"{int(real_dollar_year)} dollars"
 
 # -----------------------------
 # Apply Wind & Solar Cost Overrides
@@ -1094,7 +1222,7 @@ if current_config_to_save is not None:
     # Save the complete configuration
     config_name = st.session_state.pending_save
     del st.session_state.pending_save
-    save_current_config(config_name, current_config_to_save, cost_df=cost_df, fuel_df=fuel_df)
+    save_current_config(config_name, current_config_to_save, cost_df=cost_df, fuel_df=fuel_df, cpi_df=cpi_df)
     st.sidebar.success(f"✅ Configuration saved: {config_name}")
 
 st.title("📊 LCOE Dashboard")
@@ -1357,6 +1485,7 @@ if page == "📊 Main Results":
     if res_df.empty:
         st.warning("No results after filtering.")
     else:
+        res_df["LCOE_$perMWh"] = res_df["LCOE_$perMWh"] * dollar_display_factor
         # Order simulations by LCOE
         res_df = res_df.sort_values("LCOE_$perMWh", ascending=True).reset_index(drop=True)
 
@@ -1420,7 +1549,7 @@ if page == "📊 Main Results":
         fig = make_subplots(
             rows=3, cols=2,
             subplot_titles=(
-                "Simulation LCOE ($/MWh)",
+                f"Simulation LCOE ({dollar_label}/MWh)",
                 "Total Installed Capacity by Carrier (MW)",
                 "Total Generation by Carrier (GWh)",
                 "Average Capacity Factor by Carrier (%)",
@@ -1433,7 +1562,7 @@ if page == "📊 Main Results":
         fig.add_trace(
             go.Scatter(x=x_vals, y=plot_df["LCOE_$perMWh"], mode="lines+markers", name="LCOE", line=dict(width=3), legendgroup="LCOE",
                       customdata=scenarios_ordered,
-                      hovertemplate="<b>%{customdata}</b><br>LCOE: $%{y:.2f}/MWh<extra></extra>"),
+                      hovertemplate=f"<b>%{{customdata}}</b><br>LCOE: %{{y:.2f}} {dollar_label}/MWh<extra></extra>"),
             row=1, col=1
         )
 
@@ -1613,13 +1742,13 @@ if page == "📊 Main Results":
                     size=marker_sizes,
                     color=tri_df['LCOE'],
                     colorscale='RdYlBu_r',  # Red (high LCOE) to Blue (low LCOE)
-                    colorbar=dict(title="LCOE ($/MWh)"),
+                    colorbar=dict(title=f"LCOE ({dollar_label}/MWh)"),
                     line=dict(width=1.5, color='white'),  # Thicker white border for better edge visibility
                     sizemode='diameter',
                     opacity=0.7  # Reduced opacity for better overlapping visibility
                 ),
                 text=[f"Scenario: {row['Scenario']}<br>"
-                      f"LCOE: ${row['LCOE']:.1f}/MWh<br>"
+                      f"LCOE: {row['LCOE']:.1f} {dollar_label}/MWh<br>"
                       f"Total Capacity: {row['Total_MW']:.0f} MW<br>"
                       f"Total New Capacity: {row['Total_New_MW']:.0f} MW<br>"
                       f"Geothermal: {row['Geothermal_MW']:.0f} MW (New: {row['New_Geothermal_MW']:.0f} MW, {row['New_Geothermal_frac']*100:.1f}%)<br>"
@@ -1787,7 +1916,7 @@ if page == "📊 Main Results":
                     combined_tab.to_excel(writer, index=False, sheet_name="All_Data")
                 st.download_button("Download results (Excel)", data=buffer.getvalue(), file_name="simulation_lcoe_dashboard_export.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            st.caption("Notes: LCOE uses PV(costs)/PV(generation) over the selected horizon. Fuel costs use the year-by-year fuel price projections; non-fuel variable and fixed production costs escalate annually from 2024 values using their per-generator escalation rates. CAPEX treatment is selectable (upfront or annualized with CRF). Generation and costs are discounted using the chosen scheme. Carrier panels use the base single-year operational data.")
+            st.caption(f"Notes: LCOE uses PV(costs)/PV(generation) over the selected horizon. Displayed monetary results use {dollar_label}. Fuel costs use the year-by-year fuel price projections; non-fuel variable and fixed production costs escalate annually from 2024 values using their per-generator escalation rates. CAPEX treatment is selectable (upfront or annualized with CRF). Generation and costs are discounted using the chosen scheme. Carrier panels use the base single-year operational data.")
 
 elif page == "🔍 Sensitivity Analysis":
     # -----------------------------
@@ -2075,7 +2204,7 @@ elif page == "🔍 Sensitivity Analysis":
         
         # Add tolerance for lowest cost scenarios
         st.markdown("**Lowest Cost Scenarios**")
-        lcoe_tolerance = st.number_input("LCOE tolerance ($/MWh)", 
+        lcoe_tolerance = st.number_input(f"LCOE tolerance ({dollar_label}/MWh)",
                                        min_value=1.0, max_value=100.0, value=10.0, step=1.0,
                                        help="Include scenarios with LCOE ≤ (minimum LCOE + tolerance)")
         
@@ -2277,7 +2406,7 @@ elif page == "🔍 Sensitivity Analysis":
                     best_lcoe = scenario_lcoes_df["LCOE"].min()
                     
                     # Find all scenarios within tolerance
-                    lcoe_threshold = best_lcoe + lcoe_tolerance  # Both are in $/MWh
+                    lcoe_threshold = best_lcoe + (lcoe_tolerance / dollar_display_factor)
                     low_cost_scenarios = scenario_lcoes_df[scenario_lcoes_df["LCOE"] <= lcoe_threshold]["Scenario"].tolist()
                     
                     # Get capacity mix for all low-cost scenarios and calculate ranges
@@ -2314,12 +2443,12 @@ elif page == "🔍 Sensitivity Analysis":
                         "Parameter_Value": mult if len(selected_params) > 1 else (mult * selected_params[0]['current_val']),
                         "Multiplier": mult,
                         "Best_Scenario": best_scenario,
-                        "Best_LCOE": best_lcoe,
+                        "Best_LCOE": best_lcoe * dollar_display_factor,
                         "Capacity_Mix": cap_mix,
                         "Capacity_Ranges": capacity_ranges,
                         "Low_Cost_Scenarios_Count": len(low_cost_scenarios),
                         "Low_Cost_Scenarios": low_cost_scenarios,
-                        "LCOE_Threshold": lcoe_threshold,
+                        "LCOE_Threshold": lcoe_threshold * dollar_display_factor,
                         "Parameters_Varied": [p['label'] for p in selected_params]
                     })
         
@@ -2410,7 +2539,7 @@ elif page == "🔍 Sensitivity Analysis":
                         params_list += f" and {len(param_labels)-3} more"
                 
                 fig_sens.update_layout(
-                    title=f"Capacity Ranges in Lowest-Cost Scenarios {title_suffix}<br><sub>Parameters: {params_list if len(selected_params) > 1 else param_label} | Tolerance: {lcoe_tolerance}$/MWh</sub>",
+                    title=f"Capacity Ranges in Lowest-Cost Scenarios {title_suffix}<br><sub>Parameters: {params_list if len(selected_params) > 1 else param_label} | Tolerance: {lcoe_tolerance} {dollar_label}/MWh</sub>",
                     xaxis_title=x_axis_title,
                     yaxis_title="Installed Capacity (MW)",
                     height=400,
@@ -2427,14 +2556,14 @@ elif page == "🔍 Sensitivity Analysis":
                     # Single parameter - show actual parameter values
                     summary_table = sens_df[["Parameter_Value", "Multiplier", "Best_LCOE", "Low_Cost_Scenarios_Count", "Low_Cost_Scenarios"]].copy()
                     summary_table["Best_LCOE"] = summary_table["Best_LCOE"].round(2)
-                    summary_table["LCOE_Threshold"] = (summary_table["Best_LCOE"] + lcoe_tolerance).round(2)
+                    summary_table["LCOE_Threshold"] = summary_table["Best_LCOE"] + (lcoe_tolerance / dollar_display_factor * dollar_display_factor)
                     # Format scenario names as comma-separated string
                     summary_table["Scenarios_List"] = summary_table["Low_Cost_Scenarios"].apply(lambda x: ", ".join(x))
                     summary_table = summary_table.rename(columns={
                         "Parameter_Value": f"{selected_params[0]['label']}",
-                        "Best_LCOE": "Best LCOE ($/MWh)", 
+                        "Best_LCOE": f"Best LCOE ({dollar_label}/MWh)", 
                         "Low_Cost_Scenarios_Count": "# Low-Cost Scenarios",
-                        "LCOE_Threshold": "LCOE Threshold ($/MWh)",
+                        "LCOE_Threshold": f"LCOE Threshold ({dollar_label}/MWh)",
                         "Scenarios_List": "Scenarios Included"
                     })
                     # Drop the original scenarios column after formatting
@@ -2443,13 +2572,13 @@ elif page == "🔍 Sensitivity Analysis":
                     # Multiple parameters - show multipliers and list of parameters
                     summary_table = sens_df[["Multiplier", "Best_LCOE", "Low_Cost_Scenarios_Count", "Low_Cost_Scenarios"]].copy()
                     summary_table["Best_LCOE"] = summary_table["Best_LCOE"].round(2)
-                    summary_table["LCOE_Threshold"] = (summary_table["Best_LCOE"] + lcoe_tolerance).round(2)
+                    summary_table["LCOE_Threshold"] = summary_table["Best_LCOE"] + (lcoe_tolerance / dollar_display_factor * dollar_display_factor)
                     # Format scenario names as comma-separated string
                     summary_table["Scenarios_List"] = summary_table["Low_Cost_Scenarios"].apply(lambda x: ", ".join(x))
                     summary_table = summary_table.rename(columns={
-                        "Best_LCOE": "Best LCOE ($/MWh)", 
+                        "Best_LCOE": f"Best LCOE ({dollar_label}/MWh)", 
                         "Low_Cost_Scenarios_Count": "# Low-Cost Scenarios",
-                        "LCOE_Threshold": "LCOE Threshold ($/MWh)",
+                        "LCOE_Threshold": f"LCOE Threshold ({dollar_label}/MWh)",
                         "Scenarios_List": "Scenarios Included"
                     })
                     # Drop the original scenarios column after formatting
@@ -2594,7 +2723,7 @@ elif page == "⚡ Generator Breakdown":
     # Create scenario selection dropdown
     scenario_options = []
     for _, row in scenario_df.iterrows():
-        option_text = f"{row['Scenario']} (${row['LCOE_$perMWh']:.1f}/MWh)"
+        option_text = f"{row['Scenario']} ({row['LCOE_$perMWh'] * dollar_display_factor:.1f} {dollar_label}/MWh)"
         scenario_options.append(option_text)
     
     # Default to lowest LCOE scenario
@@ -2716,6 +2845,8 @@ elif page == "⚡ Generator Breakdown":
         if gen_breakdown_data:
             # Create breakdown dataframe
             breakdown_df = pd.DataFrame(gen_breakdown_data)
+            for col in ['Capital_Cost', 'Fuel_Cost', 'Non_Fuel_Variable', 'Fixed_Cost', 'Total_LCOE']:
+                breakdown_df[col] = breakdown_df[col] * dollar_display_factor
             breakdown_df = breakdown_df.sort_values('Total_LCOE', ascending=False)
             
             # Create stacked bar chart
@@ -2754,7 +2885,7 @@ elif page == "⚡ Generator Breakdown":
             fig.update_layout(
                 title=f'Generator LCOE Breakdown - {selected_scenario}',
                 xaxis_title='Generator',
-                yaxis_title='Levelized Cost ($/MWh)',
+                yaxis_title=f'Levelized Cost ({dollar_label}/MWh)',
                 barmode='stack',
                 height=600,
                 xaxis={'tickangle': 45},
@@ -2838,11 +2969,11 @@ elif page == "⚡ Generator Breakdown":
                     'Generation_MWh': 'Generation (MWh)',
                     'Capacity_MW': 'Capacity (MW)',
                     'Capacity_Factor_pct': 'Capacity Factor (%)',
-                    'Capital_Cost': 'Capital ($/MWh)',
-                    'Fuel_Cost': 'Fuel ($/MWh)',
-                    'Non_Fuel_Variable': 'Non-Fuel Var ($/MWh)',
-                    'Fixed_Cost': 'Fixed ($/MWh)',
-                    'Total_LCOE': 'Total LCOE ($/MWh)'
+                    'Capital_Cost': f'Capital ({dollar_label}/MWh)',
+                    'Fuel_Cost': f'Fuel ({dollar_label}/MWh)',
+                    'Non_Fuel_Variable': f'Non-Fuel Var ({dollar_label}/MWh)',
+                    'Fixed_Cost': f'Fixed ({dollar_label}/MWh)',
+                    'Total_LCOE': f'Total LCOE ({dollar_label}/MWh)'
                 })
                 
                 st.dataframe(display_df, use_container_width=True)
