@@ -243,29 +243,25 @@ def capital_recovery_factor(rate, life_years):
     return (r * (1 + r) ** n) / ((1 + r) ** n - 1)
 
 def fuel_year_columns(fuel_df):
-    """Return the year columns of a fuel price DataFrame, sorted ascending."""
-    years = []
-    for c in fuel_df.columns:
-        if str(c).strip() == "Fuel":
-            continue
-        try:
-            years.append(int(str(c).strip()))
-        except ValueError:
-            continue
-    return sorted(years)
+    """Return the year values in a Year-row fuel price DataFrame."""
+    if "Year" not in fuel_df.columns:
+        return []
+    return sorted(pd.to_numeric(fuel_df["Year"], errors="coerce").dropna().astype(int).unique().tolist())
 
 def build_fuel_price_map(fuel_df):
-    """Build dict: fuel -> {year:int -> price:float} from a Fuel x Year price table.
+    """Build dict: fuel -> {year:int -> price:float} from a Year x Fuel price table.
     Interior gaps are linearly interpolated; missing values are handled per-fuel."""
     years = fuel_year_columns(fuel_df)
-    col_lookup = {y: c for c in fuel_df.columns for y in years if str(c).strip() == str(y)}
     result = {}
-    for _, row in fuel_df.iterrows():
-        fuel = str(row["Fuel"])
-        series = pd.Series({y: to_float(row[col_lookup[y]]) for y in years})
+    year_values = pd.to_numeric(fuel_df["Year"], errors="coerce")
+    for fuel in [c for c in fuel_df.columns if str(c).strip() != "Year"]:
+        series = pd.Series(
+            [to_float(value) for value in fuel_df[fuel]],
+            index=year_values
+        ).groupby(level=0).first().reindex(years)
         if series.notna().any():
             series = series.interpolate(limit_direction="both")
-        result[fuel] = series.to_dict()
+        result[str(fuel)] = series.to_dict()
     return result
 
 def get_fuel_price(fuel_price_map, fuel, year):
@@ -286,9 +282,9 @@ def make_default_fuel_df(start_yr=2024, end_yr=2055):
     fuels = ["gas","diesel","naphtha","coal","landfill","hydro","wind","solar","geo","slack"]
     base_2024 = {"gas":12,"diesel":20,"naphtha":19,"coal":5,"landfill":0,"hydro":0,"wind":0,"solar":0,"geo":0,"slack":0}
     esc_rate = 0.025
-    data = {"Fuel": fuels}
-    for y in range(start_yr, end_yr + 1):
-        data[str(y)] = [round(base_2024[f] * ((1 + esc_rate) ** (y - 2024)), 4) for f in fuels]
+    data = {"Year": list(range(start_yr, end_yr + 1))}
+    for fuel in fuels:
+        data[fuel] = [round(base_2024[fuel] * ((1 + esc_rate) ** (year - 2024)), 4) for year in data["Year"]]
     return pd.DataFrame(data)
 
 def safe_strip_list(cell):
@@ -751,9 +747,11 @@ for col in ["Non-fuel var cost escalation rate (%/yr)",
     if col in cost_df.columns:
         cost_df[col] = cost_df[col].apply(to_float)
 
-# Fuel price columns are year labels (e.g. "2024", "2025", ...)
+# Fuel price rows contain years; all other columns contain fuel prices.
+if "Year" in fuel_df.columns:
+    fuel_df["Year"] = pd.to_numeric(fuel_df["Year"], errors="coerce").astype("Int64")
 for col in fuel_df.columns:
-    if str(col).strip() != "Fuel":
+    if str(col).strip() != "Year":
         fuel_df[col] = fuel_df[col].apply(to_float)
 
 fuel_price_map = build_fuel_price_map(fuel_df)
@@ -1836,7 +1834,7 @@ elif page == "🔍 Sensitivity Analysis":
             # Fuel Cost Parameters
             st.markdown("*Fuel Cost Parameters:*")
             st.caption("A multiplier is applied to the entire year-by-year price projection for the selected fuel.")
-            available_fuels = fuel_df["Fuel"].unique()
+            available_fuels = [col for col in fuel_df.columns if str(col).strip() != "Year"]
             for fuel in available_fuels:
                 if st.checkbox(f"Fuel Price - {fuel}"):
                     selected_params.append({
@@ -1960,7 +1958,7 @@ elif page == "🔍 Sensitivity Analysis":
                 }]
                 
             elif param_type == "Fuel Cost":
-                available_fuels = fuel_df["Fuel"].unique()
+                available_fuels = [col for col in fuel_df.columns if str(col).strip() != "Year"]
                 selected_fuel = st.selectbox("Fuel", available_fuels)
                 st.caption("A multiplier is applied to the entire year-by-year price projection for the selected fuel.")
                 
@@ -2118,10 +2116,8 @@ elif page == "🔍 Sensitivity Analysis":
                             
                     elif param_type == "Fuel Cost":
                         selected_fuel = param_info['fuel']
-                        fuel_year_cols = [c for c in mod_fuel_df.columns if str(c).strip() != "Fuel"]
-                        fuel_mask = mod_fuel_df["Fuel"] == selected_fuel
-                        for yc in fuel_year_cols:
-                            mod_fuel_df.loc[fuel_mask, yc] = mod_fuel_df.loc[fuel_mask, yc].apply(to_float) * mult
+                        if selected_fuel in mod_fuel_df.columns:
+                            mod_fuel_df[selected_fuel] = mod_fuel_df[selected_fuel].apply(to_float) * mult
                         
                     elif param_type == "Wind Technology Override":
                         selected_param = param_info['param']
@@ -2182,7 +2178,7 @@ elif page == "🔍 Sensitivity Analysis":
                         mod_cost_df[col] = mod_cost_df[col].apply(to_float)
                 
                 for col in mod_fuel_df.columns:
-                    if str(col).strip() != "Fuel":
+                    if str(col).strip() != "Year":
                         mod_fuel_df[col] = mod_fuel_df[col].apply(to_float)
                 
                 # Recalculate LCOE for all scenarios with modified costs
@@ -2858,34 +2854,34 @@ elif page == "⚡ Generator Breakdown":
 elif page == "⛽ Fuel Price Projections":
     st.markdown("## Fuel Price Projections")
     st.markdown("Year-by-year fuel price inputs ($/MMBtu), as edited in the **Fuel Price Projections** table above. "
-                "Years within the selected time horizon (start to end year) are highlighted.")
+                "Rows within the selected time horizon (start to end year) are highlighted.")
 
     fuel_years = fuel_year_columns(fuel_df)
     if not fuel_years:
-        st.warning("No year columns found in the fuel price table. Add year columns (e.g. '2024', '2025', ...) to the Fuel Price Projections input.")
+        st.warning("No valid years found in the fuel price table. Add a Year column and fuel-price columns such as gas, diesel, and coal.")
     else:
         horizon_years = set(range(int(start_year), int(end_year) + 1))
-        year_cols_sorted = [str(y) for y in fuel_years]
-
-        table_df = fuel_df[["Fuel"] + year_cols_sorted].copy()
-        for c in year_cols_sorted:
-            table_df[c] = table_df[c].apply(to_float)
+        fuel_cols = [col for col in fuel_df.columns if str(col).strip() != "Year"]
+        table_df = fuel_df[["Year"] + fuel_cols].copy()
+        table_df["Year"] = pd.to_numeric(table_df["Year"], errors="coerce").astype("Int64")
+        for col in fuel_cols:
+            table_df[col] = table_df[col].apply(to_float)
 
         # -----------------------------
         # Table with time horizon highlighted
         # -----------------------------
         st.markdown("### Fuel Price Table")
 
-        def highlight_horizon_cols(col):
-            if int(col.name) in horizon_years:
-                return ["background-color: #fff3b0"] * len(col)
-            return [""] * len(col)
+        def highlight_horizon_rows(row):
+            if row["Year"] in horizon_years:
+                return ["background-color: #fff3b0"] * len(row)
+            return [""] * len(row)
 
-        styled_table = table_df.style.apply(highlight_horizon_cols, subset=year_cols_sorted, axis=0).format(
-            {c: "{:.2f}" for c in year_cols_sorted}
+        styled_table = table_df.style.apply(highlight_horizon_rows, axis=1).format(
+            {col: "{:.2f}" for col in fuel_cols}
         )
         st.dataframe(styled_table, use_container_width=True)
-        st.caption(f"Highlighted columns ({start_year}–{end_year}) fall within the selected time horizon.")
+        st.caption(f"Highlighted rows ({start_year}–{end_year}) fall within the selected time horizon.")
 
         # -----------------------------
         # Plot with time horizon highlighted
@@ -2894,18 +2890,19 @@ elif page == "⛽ Fuel Price Projections":
 
         plot_fuels = st.multiselect(
             "Fuels to plot",
-            options=table_df["Fuel"].tolist(),
-            default=table_df["Fuel"].tolist()
+            options=fuel_cols,
+            default=fuel_cols
         )
 
         if plot_fuels:
             fig_fuel = go.Figure()
-            for _, row in table_df[table_df["Fuel"].isin(plot_fuels)].iterrows():
+            indexed_table = table_df.set_index("Year").reindex(fuel_years)
+            for fuel in plot_fuels:
                 fig_fuel.add_trace(go.Scatter(
                     x=fuel_years,
-                    y=[row[str(y)] for y in fuel_years],
+                    y=indexed_table[fuel].tolist(),
                     mode="lines+markers",
-                    name=str(row["Fuel"])
+                    name=str(fuel)
                 ))
 
             # Highlight the time horizon as a shaded band
