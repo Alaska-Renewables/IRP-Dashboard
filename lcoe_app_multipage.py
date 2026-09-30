@@ -163,7 +163,8 @@ with st.sidebar.expander("🔧 Save & Load Configurations"):
             'capex_treatment_index': 1,
             'asset_life_years': 30,
             'dollar_mode': 'Nominal dollars',
-            'real_dollar_year': 2030
+            'real_dollar_year': 2030,
+            'fuel_projection_scenario': 'Default'
         }
         
         # Reset sidebar input session states
@@ -173,6 +174,7 @@ with st.sidebar.expander("🔧 Save & Load Configurations"):
         st.session_state.global_discount_rate_input = config_defaults['global_discount_rate']
         st.session_state.capex_treatment_input_index = config_defaults['capex_treatment_index']
         st.session_state.asset_life_years_input = config_defaults['asset_life_years']
+        st.session_state.fuel_projection_scenario_input = config_defaults['fuel_projection_scenario']
         
         # Reset wind override parameters
         st.session_state.wind_override_enabled = False
@@ -453,7 +455,8 @@ config_defaults = {
     'capex_treatment_index': 1,
     'asset_life_years': 30,
     'dollar_mode': 'Nominal dollars',
-    'real_dollar_year': 2030
+    'real_dollar_year': 2030,
+    'fuel_projection_scenario': 'Default'
 }
 
 # Load configuration if requested
@@ -484,6 +487,7 @@ if 'load_config' in st.session_state:
         st.session_state.asset_life_years_input = loaded_config.get('asset_life_years', config_defaults['asset_life_years'])
         st.session_state.dollar_mode_input = loaded_config.get('dollar_mode', config_defaults['dollar_mode'])
         st.session_state.real_dollar_year_input = loaded_config.get('real_dollar_year', config_defaults['real_dollar_year'])
+        st.session_state.fuel_projection_scenario_input = loaded_config.get('fuel_projection_scenario', config_defaults['fuel_projection_scenario'])
         
         # Wind override parameters
         st.session_state.wind_override_enabled = loaded_config.get('wind_override_enabled', False)
@@ -611,6 +615,25 @@ def load_any(fileobj):
         return pd.read_csv(fileobj)
     return pd.read_excel(fileobj)
 
+@st.cache_data
+def load_fuel_scenarios(fileobj):
+    """Load fuel projections from scenario-named Excel sheets or one CSV/sheet."""
+    if fileobj is None:
+        return {}
+    name = fileobj.name.lower()
+    if name.endswith(".csv"):
+        return {"Default": pd.read_csv(fileobj)}
+    workbook = pd.read_excel(fileobj, sheet_name=None)
+    scenario_sheets = {
+        sheet_name[:-9]: dataframe
+        for sheet_name, dataframe in workbook.items()
+        if sheet_name.lower().endswith("_scenario")
+    }
+    if scenario_sheets:
+        return scenario_sheets
+    first_sheet, first_dataframe = next(iter(workbook.items()))
+    return {"Default": first_dataframe}
+
 @st.cache_data  
 def process_operations_data(_ops_df, selected_filters):
     """Process and filter operations data with caching."""
@@ -685,12 +708,20 @@ if cost_df is None:
     })
 
 if 'loaded_fuel_df' in st.session_state:
-    fuel_df = st.session_state.loaded_fuel_df
+    fuel_sheets = {"Saved": st.session_state.loaded_fuel_df}
 else:
-    fuel_df = load_any(fuel_file)
-    
-if fuel_df is None:
-    fuel_df = make_default_fuel_df()
+    fuel_sheets = load_fuel_scenarios(fuel_file)
+
+if not fuel_sheets:
+    fuel_sheets = {"Default": make_default_fuel_df()}
+
+fuel_scenario_options = list(fuel_sheets.keys())
+if 'fuel_projection_scenario_input' not in st.session_state:
+    st.session_state.fuel_projection_scenario_input = fuel_scenario_options[0]
+if st.session_state.fuel_projection_scenario_input not in fuel_scenario_options:
+    st.session_state.fuel_projection_scenario_input = fuel_scenario_options[0]
+fuel_projection_scenario = st.session_state.fuel_projection_scenario_input
+fuel_df = fuel_sheets[fuel_projection_scenario].copy()
 
 if 'loaded_cpi_df' in st.session_state:
     cpi_df = st.session_state.loaded_cpi_df
@@ -748,12 +779,14 @@ if st.session_state.get('force_data_reload', False):
         cost_df.columns = [c.strip() for c in cost_df.columns]
     
     # Reload original fuel data from file (or fallback to example data)
-    if fuel_file is not None:
-        fuel_df = load_any(fuel_file)
-        fuel_df.columns = [str(c).strip() for c in fuel_df.columns]
-    else:
-        fuel_df = make_default_fuel_df()
-        fuel_df.columns = [str(c).strip() for c in fuel_df.columns]
+    fuel_sheets = load_fuel_scenarios(fuel_file)
+    if not fuel_sheets:
+        fuel_sheets = {"Default": make_default_fuel_df()}
+    if st.session_state.fuel_projection_scenario_input not in fuel_sheets:
+        st.session_state.fuel_projection_scenario_input = list(fuel_sheets.keys())[0]
+    fuel_projection_scenario = st.session_state.fuel_projection_scenario_input
+    fuel_df = fuel_sheets[fuel_projection_scenario].copy()
+    fuel_df.columns = [str(c).strip() for c in fuel_df.columns]
 
     if cpi_file is not None:
         cpi_df = load_any(cpi_file)
@@ -764,6 +797,12 @@ if st.session_state.get('force_data_reload', False):
     
     # Clear the flag
     del st.session_state.force_data_reload
+
+fuel_scenario_options = list(fuel_sheets.keys())
+if st.session_state.fuel_projection_scenario_input not in fuel_scenario_options:
+    st.session_state.fuel_projection_scenario_input = fuel_scenario_options[0]
+fuel_projection_scenario = st.session_state.fuel_projection_scenario_input
+fuel_df = fuel_sheets[fuel_projection_scenario].copy()
 
 # Create dynamic editor keys to force refresh after reset
 gen_costs_key = f"gen_costs_{st.session_state.get('reset_counter', 0)}"
@@ -788,7 +827,8 @@ if 'pending_save' in st.session_state:
         'capex_treatment_index': capex_treatment_options.index(capex_treatment),
         'asset_life_years': asset_life_years,
         'dollar_mode': dollar_mode,
-        'real_dollar_year': int(real_dollar_year)
+        'real_dollar_year': int(real_dollar_year),
+        'fuel_projection_scenario': fuel_projection_scenario
     }
 
 st.markdown("### 🔄 Wind & Solar Cost Override Options")
@@ -865,6 +905,16 @@ if use_wind_override or use_solar_override:
 
 # Editable cost tables
 st.markdown("### Cost Inputs (editable)")
+if len(fuel_scenario_options) > 1:
+    fuel_projection_scenario = st.selectbox(
+        "Fuel projection scenario",
+        options=fuel_scenario_options,
+        index=fuel_scenario_options.index(st.session_state.fuel_projection_scenario_input),
+        key="fuel_projection_scenario_input"
+    )
+    fuel_df = fuel_sheets[fuel_projection_scenario].copy()
+else:
+    st.caption(f"Fuel projection scenario: {fuel_projection_scenario}")
 with st.expander("Generator Cost Inputs"):
     edited_cost = st.data_editor(
         cost_df,
