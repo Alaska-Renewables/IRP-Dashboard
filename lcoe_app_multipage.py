@@ -339,6 +339,26 @@ def cpi_value(cpi_index, year):
     years = sorted(cpi_index)
     return cpi_index[min(max(int(year), years[0]), years[-1])]
 
+def nominal_lcoe_to_real_factor(nominal_rate, cpi_index, start_year, target_year, project_years):
+    """Convert a flat nominal LCOE to equivalent real dollars at target_year.
+
+    The first step applies the nominal-to-real levelization ratio over the project
+    horizon; the second step translates horizon-start real dollars to target_year.
+    """
+    if not cpi_index or project_years <= 0:
+        return 1.0
+    discount_sum = sum(discount_factor(nominal_rate, t) for t in range(1, project_years + 1))
+    start_cpi = cpi_value(cpi_index, start_year)
+    inflation_discount_sum = sum(
+        (cpi_value(cpi_index, start_year + t - 1) / start_cpi if start_cpi else 1.0)
+        * discount_factor(nominal_rate, t)
+        for t in range(1, project_years + 1)
+    )
+    if inflation_discount_sum == 0:
+        return 1.0
+    target_factor = cpi_value(cpi_index, target_year) / start_cpi if start_cpi else 1.0
+    return (discount_sum / inflation_discount_sum) * target_factor
+
 def safe_strip_list(cell):
     """Parse comma-separated strings like 'Fire_Island, Eva_Creek' to list."""
     if pd.isna(cell):
@@ -902,9 +922,14 @@ if dollar_mode == "Real dollars" and not cpi_index:
 
 calculation_dollar_year = int(start_year)
 if dollar_mode == "Real dollars" and cpi_index:
-    cpi_base = cpi_value(cpi_index, calculation_dollar_year)
-    cpi_display = cpi_value(cpi_index, real_dollar_year)
-    dollar_display_factor = cpi_display / cpi_base if cpi_base else 1.0
+    project_years = int(end_year) - int(start_year) + 1
+    dollar_display_factor = nominal_lcoe_to_real_factor(
+        global_discount_rate,
+        cpi_index,
+        calculation_dollar_year,
+        int(real_dollar_year),
+        project_years
+    )
 else:
     dollar_display_factor = 1.0
 
@@ -1970,7 +1995,7 @@ if page == "📊 Main Results":
                     combined_tab.to_excel(writer, index=False, sheet_name="All_Data")
                 st.download_button("Download results (Excel)", data=buffer.getvalue(), file_name="simulation_lcoe_dashboard_export.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            st.caption(f"Notes: LCOE uses PV(costs)/PV(generation) over the selected horizon. Displayed monetary results use {dollar_label}. Reference-year non-fuel costs are converted to the horizon start year using CPI, then escalated at their nominal rates. Fuel costs use the year-by-year fuel price projections. CAPEX treatment is selectable (upfront or annualized with CRF). Generation and costs are discounted using the global rate. Carrier panels use the base single-year operational data.")
+            st.caption(f"Notes: LCOE uses PV(costs)/PV(generation) over the selected horizon. Displayed monetary results use {dollar_label}. Real-dollar LCOE first converts the nominal levelized cost to equivalent horizon-start real dollars using the nominal discount rate, CPI, and project life, then translates it to the selected real-dollar year. Reference-year non-fuel costs are converted to the horizon start year using CPI, then escalated at their nominal rates. Fuel costs use the year-by-year fuel price projections. CAPEX treatment is selectable (upfront or annualized with CRF). Generation and costs are discounted using the global rate. Carrier panels use the base single-year operational data.")
 
 elif page == "🔍 Sensitivity Analysis":
     # -----------------------------
