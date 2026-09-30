@@ -183,6 +183,8 @@ with st.sidebar.expander("🔧 Save & Load Configurations"):
         st.session_state.wind_var_esc = 2.5
         st.session_state.wind_fixed_cost = 30.0
         st.session_state.wind_fixed_esc = 2.5
+        st.session_state.wind_curtailment_cost = 0.0
+        st.session_state.wind_curtailment_esc = 0.0
         
         # Reset solar override parameters
         st.session_state.solar_override_enabled = False
@@ -193,6 +195,8 @@ with st.sidebar.expander("🔧 Save & Load Configurations"):
         st.session_state.solar_var_esc = 2.5
         st.session_state.solar_fixed_cost = 20.0
         st.session_state.solar_fixed_esc = 2.5
+        st.session_state.solar_curtailment_cost = 0.0
+        st.session_state.solar_curtailment_esc = 0.0
         
         # Reset cost editor data to original input file values
         if 'gen_costs' in st.session_state:
@@ -470,6 +474,8 @@ if 'load_config' in st.session_state:
         st.session_state.wind_var_esc = loaded_config.get('wind_var_esc', 2.5)
         st.session_state.wind_fixed_cost = loaded_config.get('wind_fixed_cost', 30.0)
         st.session_state.wind_fixed_esc = loaded_config.get('wind_fixed_esc', 2.5)
+        st.session_state.wind_curtailment_cost = loaded_config.get('wind_curtailment_cost', 0.0)
+        st.session_state.wind_curtailment_esc = loaded_config.get('wind_curtailment_esc', 0.0)
         
         # Solar override parameters
         st.session_state.solar_override_enabled = loaded_config.get('solar_override_enabled', False)
@@ -480,6 +486,8 @@ if 'load_config' in st.session_state:
         st.session_state.solar_var_esc = loaded_config.get('solar_var_esc', 2.5)
         st.session_state.solar_fixed_cost = loaded_config.get('solar_fixed_cost', 20.0)
         st.session_state.solar_fixed_esc = loaded_config.get('solar_fixed_esc', 2.5)
+        st.session_state.solar_curtailment_cost = loaded_config.get('solar_curtailment_cost', 0.0)
+        st.session_state.solar_curtailment_esc = loaded_config.get('solar_curtailment_esc', 0.0)
         
         # Load filter parameters
         for key, value in loaded_config.items():
@@ -652,6 +660,8 @@ if cost_df is None:
         "Reference year":[2024]*8,
         "Reference year Non-fuel var cost ($/MWh)":[8,8,4,4,0,0,0,0],
         "Reference year Fixed Production cost ($/kW-yr)":[24,32,43,24,35,30,25,20],
+        "Reference year Curtailment cost ($/MWh)":[0]*8,
+        "Curtailment cost escalation rate (% nominal/yr)":["0%"]*8,
     })
 
 if 'loaded_fuel_df' in st.session_state:
@@ -712,6 +722,8 @@ if st.session_state.get('force_data_reload', False):
             "Reference year":[2024]*8,
             "Reference year Non-fuel var cost ($/MWh)":[8,8,4,4,0,0,0,0],
             "Reference year Fixed Production cost ($/kW-yr)":[24,32,43,24,35,30,25,20],
+            "Reference year Curtailment cost ($/MWh)":[0]*8,
+            "Curtailment cost escalation rate (% nominal/yr)":["0%"]*8,
         })
         cost_df.columns = [c.strip() for c in cost_df.columns]
     
@@ -778,6 +790,8 @@ with st.expander("🌬️ Wind Technology Cost Overrides"):
             wind_var_esc = st.number_input("Wind Non-fuel Var Cost (% nominal/yr)", min_value=-100.0, max_value=100.0, value=2.5, step=0.1, key="wind_var_esc") / 100.0
             wind_fixed_cost = st.number_input("Wind Reference-year Fixed Production Cost ($/kW-yr)", min_value=0.0, value=30.0, step=1.0, key="wind_fixed_cost")
             wind_fixed_esc = st.number_input("Wind Fixed Production Cost (% nominal/yr)", min_value=-100.0, max_value=100.0, value=2.5, step=0.1, key="wind_fixed_esc") / 100.0
+            wind_curtailment_cost = st.number_input("Wind Reference-year Curtailment Cost ($/MWh)", min_value=0.0, value=0.0, step=0.1, key="wind_curtailment_cost")
+            wind_curtailment_esc = st.number_input("Wind Curtailment Cost (% nominal/yr)", min_value=-100.0, max_value=100.0, value=0.0, step=0.1, key="wind_curtailment_esc") / 100.0
     else:
         # Default values when not in override mode
         wind_capex = 1500.0
@@ -787,6 +801,8 @@ with st.expander("🌬️ Wind Technology Cost Overrides"):
         wind_var_esc = 0.025
         wind_fixed_cost = 30.0
         wind_fixed_esc = 0.025
+        wind_curtailment_cost = 0.0
+        wind_curtailment_esc = 0.0
 
 with st.expander("☀️ Solar Technology Cost Overrides"):
     use_solar_override = st.checkbox("Use standardized solar costs for all solar generators", value=False, key="solar_override_enabled")
@@ -804,6 +820,8 @@ with st.expander("☀️ Solar Technology Cost Overrides"):
             solar_var_esc = st.number_input("Solar Non-fuel Var Cost (% nominal/yr)", min_value=-100.0, max_value=100.0, value=2.5, step=0.1, key="solar_var_esc") / 100.0
             solar_fixed_cost = st.number_input("Solar Reference-year Fixed Production Cost ($/kW-yr)", min_value=0.0, value=20.0, step=1.0, key="solar_fixed_cost")
             solar_fixed_esc = st.number_input("Solar Fixed Production Cost (% nominal/yr)", min_value=-100.0, max_value=100.0, value=2.5, step=0.1, key="solar_fixed_esc") / 100.0
+            solar_curtailment_cost = st.number_input("Solar Reference-year Curtailment Cost ($/MWh)", min_value=0.0, value=0.0, step=0.1, key="solar_curtailment_cost")
+            solar_curtailment_esc = st.number_input("Solar Curtailment Cost (% nominal/yr)", min_value=-100.0, max_value=100.0, value=0.0, step=0.1, key="solar_curtailment_esc") / 100.0
     else:
         # Default values when not in override mode
         solar_capex = 1200.0
@@ -813,6 +831,8 @@ with st.expander("☀️ Solar Technology Cost Overrides"):
         solar_var_esc = 0.025
         solar_fixed_cost = 20.0
         solar_fixed_esc = 0.025
+        solar_curtailment_cost = 0.0
+        solar_curtailment_esc = 0.0
 
 if use_wind_override or use_solar_override:
     st.info("💡 **Override Behavior**: When enabled, these standardized costs will replace the individual generator costs for all wind/solar generators in the cost table below. This is useful for sensitivity analysis and standardizing renewable technology assumptions.")
@@ -835,7 +855,9 @@ with st.expander("Generator Cost Inputs"):
             "Non-fuel var cost escalation rate (% nominal/yr)": st.column_config.TextColumn(width="medium"),
             "Fixed Production escalation rate (% nominal/yr)": st.column_config.TextColumn(width="medium"),
             "Reference year Non-fuel var cost ($/MWh)": st.column_config.NumberColumn(width="medium"),
-            "Reference year Fixed Production cost ($/kW-yr)": st.column_config.NumberColumn(width="medium")
+            "Reference year Fixed Production cost ($/kW-yr)": st.column_config.NumberColumn(width="medium"),
+            "Reference year Curtailment cost ($/MWh)": st.column_config.NumberColumn(width="medium"),
+            "Curtailment cost escalation rate (% nominal/yr)": st.column_config.TextColumn(width="medium")
         }
     )
 with st.expander("Fuel Price Projections ($/MMBtu by year)"):
@@ -853,6 +875,8 @@ for col in ["Non-fuel var cost escalation rate (% nominal/yr)",
             "Fixed Production escalation rate (% nominal/yr)",
             "Reference year Non-fuel var cost ($/MWh)",
             "Reference year Fixed Production cost ($/kW-yr)",
+            "Reference year Curtailment cost ($/MWh)",
+            "Curtailment cost escalation rate (% nominal/yr)",
             "Capital cost ($/kW)"]:
     if col in cost_df.columns:
         cost_df[col] = cost_df[col].apply(to_float)
@@ -909,6 +933,8 @@ if use_wind_override:
         cost_df.loc[wind_mask, "Non-fuel var cost escalation rate (% nominal/yr)"] = wind_var_esc
         cost_df.loc[wind_mask, "Reference year Fixed Production cost ($/kW-yr)"] = wind_fixed_cost
         cost_df.loc[wind_mask, "Fixed Production escalation rate (% nominal/yr)"] = wind_fixed_esc
+        cost_df.loc[wind_mask, "Reference year Curtailment cost ($/MWh)"] = wind_curtailment_cost
+        cost_df.loc[wind_mask, "Curtailment cost escalation rate (% nominal/yr)"] = wind_curtailment_esc
 
 if use_solar_override:
     solar_mask = cost_df["Carrier"].str.lower() == "solar"
@@ -926,6 +952,8 @@ if use_solar_override:
         cost_df.loc[solar_mask, "Non-fuel var cost escalation rate (% nominal/yr)"] = solar_var_esc
         cost_df.loc[solar_mask, "Reference year Fixed Production cost ($/kW-yr)"] = solar_fixed_cost
         cost_df.loc[solar_mask, "Fixed Production escalation rate (% nominal/yr)"] = solar_fixed_esc
+        cost_df.loc[solar_mask, "Reference year Curtailment cost ($/MWh)"] = solar_curtailment_cost
+        cost_df.loc[solar_mask, "Curtailment cost escalation rate (% nominal/yr)"] = solar_curtailment_esc
 
 if override_summary:
     st.success("### 🎯 Cost Overrides Applied\n" + "\n".join(override_summary))
@@ -1063,16 +1091,26 @@ gen_cost = cost_df.rename(columns={
     "Capital cost ($/kW)":"capex_per_kw",
     "Reference year Non-fuel var cost ($/MWh)":"nfu_reference",
     "Reference year Fixed Production cost ($/kW-yr)":"fpu_reference",
+    "Reference year Curtailment cost ($/MWh)":"curtailment_reference",
+    "Curtailment cost escalation rate (% nominal/yr)":"curtailment_esc",
 })
 
 ops_f = ops_f.merge(gen_cost, on=["Generator","Carrier"], how="left", validate="m:1")
+
+for col, default in {
+    "curtailment_reference": 0.0,
+    "curtailment_esc": 0.0,
+    "Reference year": 2024
+}.items():
+    if col not in ops_f.columns:
+        ops_f[col] = default
 
 # Clean numerics
 for col in ["Scenario_Capacity_MW","Total_Generation_MWh","Fuel_Consumption_MMBtu"]:
     if col in ops_f.columns:
         ops_f[col] = ops_f[col].apply(to_float).fillna(0.0)
 
-for col in ["nfu_esc","fpu_esc","nfu_reference","fpu_reference","capex_per_kw"]:
+for col in ["nfu_esc","fpu_esc","nfu_reference","fpu_reference", "curtailment_reference", "curtailment_esc", "capex_per_kw"]:
     if col in ops_f.columns:
         ops_f[col] = ops_f[col].apply(to_float)
 
@@ -1139,12 +1177,17 @@ if 'param_single_LBA' in ops_f.columns:
                         base_cost = base_costs.get('Reference year Non-fuel var cost ($/MWh)')
                         if not pd.isna(base_cost):
                             ops_f.at[idx, 'nfu_reference'] = float(base_cost)
+                    if 'curtailment_reference' in ops_f.columns:
+                        base_cost = base_costs.get('Reference year Curtailment cost ($/MWh)')
+                        if not pd.isna(base_cost):
+                            ops_f.at[idx, 'curtailment_reference'] = float(base_cost)
                     
                     # Percentage-based costs (use same rate)
-                    percentage_costs = ['nfu_esc', 'fpu_esc']
+                    percentage_costs = ['nfu_esc', 'fpu_esc', 'curtailment_esc']
                     cost_map = {
                         'nfu_esc': 'Non-fuel var cost escalation rate (% nominal/yr)',
-                        'fpu_esc': 'Fixed Production escalation rate (% nominal/yr)'
+                        'fpu_esc': 'Fixed Production escalation rate (% nominal/yr)',
+                        'curtailment_esc': 'Curtailment cost escalation rate (% nominal/yr)'
                     }
                     for cost_col in percentage_costs:
                         if cost_col in ops_f.columns:
@@ -1157,7 +1200,7 @@ if 'param_single_LBA' in ops_f.columns:
                                 ops_f.at[idx, cost_col] = float(base_cost)
                     
                     # Time-based parameters (use same values)
-                    time_params = ['Capital cost year', 'Reference year'] 
+                    time_params = ['Capital cost year', 'Reference year']
                     for param in time_params:
                         if param in ops_f.columns:
                             base_value = base_costs.get(param)
@@ -1204,6 +1247,8 @@ if current_config_to_save is not None:
         current_config_to_save['wind_var_esc'] = wind_var_esc * 100.0  # Store as percentage
         current_config_to_save['wind_fixed_cost'] = wind_fixed_cost
         current_config_to_save['wind_fixed_esc'] = wind_fixed_esc * 100.0  # Store as percentage
+        current_config_to_save['wind_curtailment_cost'] = wind_curtailment_cost
+        current_config_to_save['wind_curtailment_esc'] = wind_curtailment_esc * 100.0
     
     # Add solar override parameters
     current_config_to_save['solar_override_enabled'] = use_solar_override
@@ -1215,6 +1260,8 @@ if current_config_to_save is not None:
         current_config_to_save['solar_var_esc'] = solar_var_esc * 100.0  # Store as percentage
         current_config_to_save['solar_fixed_cost'] = solar_fixed_cost
         current_config_to_save['solar_fixed_esc'] = solar_fixed_esc * 100.0  # Store as percentage
+        current_config_to_save['solar_curtailment_cost'] = solar_curtailment_cost
+        current_config_to_save['solar_curtailment_esc'] = solar_curtailment_esc * 100.0
     
     # Save the complete configuration
     config_name = st.session_state.pending_save
@@ -1229,7 +1276,7 @@ if page == "📊 Main Results":
     # Cost Data Validation
     # -----------------------------
     # Check for missing cost data after merge
-    cost_columns = ["capex_per_kw", "nfu_reference", "fpu_reference", "nfu_esc", "fpu_esc"]
+    cost_columns = ["capex_per_kw", "nfu_reference", "fpu_reference", "curtailment_reference", "nfu_esc", "fpu_esc", "curtailment_esc"]
     
     missing_cost_data = []
     for col in cost_columns:
@@ -1285,8 +1332,10 @@ if page == "📊 Main Results":
                         'capex_per_kw': 'Capital Cost',
                         'nfu_reference': 'Reference-year Non-Fuel Variable Cost',
                         'fpu_reference': 'Reference-year Fixed Production Cost',
+                        'curtailment_reference': 'Reference-year Curtailment Cost',
                         'nfu_esc': 'Non-Fuel Variable Cost Escalation',
-                        'fpu_esc': 'Fixed Production Cost Escalation'
+                        'fpu_esc': 'Fixed Production Cost Escalation',
+                        'curtailment_esc': 'Curtailment Cost Escalation'
                     }.get(cost_type, cost_type)
                     
                     st.markdown(f"**Missing {cost_name}:**")
@@ -1379,6 +1428,9 @@ if page == "📊 Main Results":
         fpu_esc = sdf["fpu_esc"].fillna(0.0).values
         nfu_reference = sdf["nfu_reference"].fillna(0.0).values
         fpu_reference = sdf["fpu_reference"].fillna(0.0).values
+        curtailment_reference = sdf["curtailment_reference"].fillna(0.0).values
+        curtailment_esc = sdf["curtailment_esc"].fillna(0.0).values
+        curtailed_MWh = sdf["Curtailed_Energy_MWh"].fillna(0.0).values if "Curtailed_Energy_MWh" in sdf.columns else np.zeros(len(sdf))
         capex_kw = sdf["capex_per_kw"].fillna(0.0).values
         cap_cost_year = sdf["Capital cost year"].fillna(np.nan).values if "Capital cost year" in sdf.columns else np.full(len(sdf), np.nan)
         reference_year = sdf["Reference year"].fillna(2024).values if "Reference year" in sdf.columns else np.full(len(sdf), 2024)
@@ -1430,14 +1482,16 @@ if page == "📊 Main Results":
                 fpu_start = fpu_reference[j] * cpi_factor
                 nfu_cost_y = escalate(nfu_start, nfu_esc[j], years_from_start)  # $/MWh
                 fpu_cost_y = escalate(fpu_start, fpu_esc[j], years_from_start)  # $/kW-yr
+                curtailment_cost_y = escalate(curtailment_reference[j] * cpi_factor, curtailment_esc[j], years_from_start)  # $/MWh
 
                 # Costs for that generator that year
                 cost_fuel = (fuel_MMBtu[j] if repeat_ops_each_year else 0.0) * (fuel_price_y if not pd.isna(fuel_price_y) else 0.0)
                 cost_nfu  = (gen_MWh[j] if repeat_ops_each_year else 0.0) * (nfu_cost_y if not pd.isna(nfu_cost_y) else 0.0)
                 cost_fpu  = (cap_MW[j] * 1000.0) * (fpu_cost_y if not pd.isna(fpu_cost_y) else 0.0)
+                cost_curtailment = curtailed_MWh[j] * (curtailment_cost_y if not pd.isna(curtailment_cost_y) else 0.0)
 
                 df_t = discount_factor(r_j, t)
-                pv_cost_sum += (cost_fuel + cost_nfu + cost_fpu) * df_t
+                pv_cost_sum += (cost_fuel + cost_nfu + cost_fpu + cost_curtailment) * df_t
 
                 # Discounted generation (exclude battery generation from denominator)
                 gen_y = (gen_MWh[j] if repeat_ops_each_year else 0.0)
@@ -1979,7 +2033,9 @@ elif page == "🔍 Sensitivity Analysis":
                 "Capital Cost ($/kW)",
                 "Fixed Production Cost ($/kW-yr)", 
                 "Non-fuel Variable Cost ($/MWh)",
+                "Curtailment Cost ($/MWh)",
                 "Capital Cost Escalation (% nominal/yr)",
+                "Curtailment Cost Escalation (% nominal/yr)",
                 "Fixed Production Escalation (% nominal/yr)",
                 "Variable Cost Escalation (% nominal/yr)"
             ]
@@ -1990,7 +2046,9 @@ elif page == "🔍 Sensitivity Analysis":
                             "Capital Cost ($/kW)": st.session_state.get('wind_capex', 1500.0),
                             "Fixed Production Cost ($/kW-yr)": st.session_state.get('wind_fixed_cost', 30.0),
                             "Non-fuel Variable Cost ($/MWh)": st.session_state.get('wind_var_cost', 0.0),
+                            "Curtailment Cost ($/MWh)": st.session_state.get('wind_curtailment_cost', 0.0),
                             "Capital Cost Escalation (% nominal/yr)": 2.0,
+                            "Curtailment Cost Escalation (% nominal/yr)": st.session_state.get('wind_curtailment_esc', 0.0) * 100.0,
                             "Fixed Production Escalation (% nominal/yr)": st.session_state.get('wind_fixed_esc', 0.025) * 100.0,
                             "Variable Cost Escalation (% nominal/yr)": st.session_state.get('wind_var_esc', 0.025) * 100.0
                         }
@@ -1999,7 +2057,9 @@ elif page == "🔍 Sensitivity Analysis":
                             "Capital Cost ($/kW)": 1500.0,
                             "Fixed Production Cost ($/kW-yr)": 30.0,
                             "Non-fuel Variable Cost ($/MWh)": 0.0,
+                            "Curtailment Cost ($/MWh)": 0.0,
                             "Capital Cost Escalation (% nominal/yr)": 2.0,
+                            "Curtailment Cost Escalation (% nominal/yr)": 0.0,
                             "Fixed Production Escalation (% nominal/yr)": 2.5,
                             "Variable Cost Escalation (% nominal/yr)": 2.5
                         }
@@ -2017,7 +2077,9 @@ elif page == "🔍 Sensitivity Analysis":
                 "Capital Cost ($/kW)",
                 "Fixed Production Cost ($/kW-yr)", 
                 "Non-fuel Variable Cost ($/MWh)",
+                "Curtailment Cost ($/MWh)",
                 "Capital Cost Escalation (% nominal/yr)",
+                "Curtailment Cost Escalation (% nominal/yr)",
                 "Fixed Production Escalation (% nominal/yr)",
                 "Variable Cost Escalation (% nominal/yr)"
             ]
@@ -2028,7 +2090,9 @@ elif page == "🔍 Sensitivity Analysis":
                             "Capital Cost ($/kW)": st.session_state.get('solar_capex', 1200.0),
                             "Fixed Production Cost ($/kW-yr)": st.session_state.get('solar_fixed_cost', 20.0),
                             "Non-fuel Variable Cost ($/MWh)": st.session_state.get('solar_var_cost', 0.0),
+                            "Curtailment Cost ($/MWh)": st.session_state.get('solar_curtailment_cost', 0.0),
                             "Capital Cost Escalation (% nominal/yr)": 1.5,
+                            "Curtailment Cost Escalation (% nominal/yr)": st.session_state.get('solar_curtailment_esc', 0.0) * 100.0,
                             "Fixed Production Escalation (% nominal/yr)": st.session_state.get('solar_fixed_esc', 0.025) * 100.0,
                             "Variable Cost Escalation (% nominal/yr)": st.session_state.get('solar_var_esc', 0.025) * 100.0
                         }
@@ -2037,7 +2101,9 @@ elif page == "🔍 Sensitivity Analysis":
                             "Capital Cost ($/kW)": 1200.0,
                             "Fixed Production Cost ($/kW-yr)": 20.0,
                             "Non-fuel Variable Cost ($/MWh)": 0.0,
+                            "Curtailment Cost ($/MWh)": 0.0,
                             "Capital Cost Escalation (% nominal/yr)": 1.5,
+                            "Curtailment Cost Escalation (% nominal/yr)": 0.0,
                             "Fixed Production Escalation (% nominal/yr)": 2.0,
                             "Variable Cost Escalation (% nominal/yr)": 2.0
                         }
@@ -2246,7 +2312,9 @@ elif page == "🔍 Sensitivity Analysis":
                             "Capital Cost ($/kW)": "Capital cost ($/kW)",
                             "Fixed Production Cost ($/kW-yr)": "Reference year Fixed Production cost ($/kW-yr)",
                             "Non-fuel Variable Cost ($/MWh)": "Reference year Non-fuel var cost ($/MWh)",
+                            "Curtailment Cost ($/MWh)": "Reference year Curtailment cost ($/MWh)",
                             "Capital Cost Escalation (% nominal/yr)": "Capital cost escalation (% nominal/yr)",
+                            "Curtailment Cost Escalation (% nominal/yr)": "Curtailment cost escalation rate (% nominal/yr)",
                             "Fixed Production Escalation (% nominal/yr)": "Fixed Production escalation rate (% nominal/yr)",
                             "Variable Cost Escalation (% nominal/yr)": "Non-fuel var cost escalation rate (% nominal/yr)"
                         }
@@ -2269,7 +2337,9 @@ elif page == "🔍 Sensitivity Analysis":
                             "Capital Cost ($/kW)": "Capital cost ($/kW)",
                             "Fixed Production Cost ($/kW-yr)": "Reference year Fixed Production cost ($/kW-yr)",
                             "Non-fuel Variable Cost ($/MWh)": "Reference year Non-fuel var cost ($/MWh)",
+                            "Curtailment Cost ($/MWh)": "Reference year Curtailment cost ($/MWh)",
                             "Capital Cost Escalation (% nominal/yr)": "Capital cost escalation (% nominal/yr)",
+                            "Curtailment Cost Escalation (% nominal/yr)": "Curtailment cost escalation rate (% nominal/yr)",
                             "Fixed Production Escalation (% nominal/yr)": "Fixed Production escalation rate (% nominal/yr)",
                             "Variable Cost Escalation (% nominal/yr)": "Non-fuel var cost escalation rate (% nominal/yr)"
                         }
@@ -2287,6 +2357,7 @@ elif page == "🔍 Sensitivity Analysis":
                             "Fixed Production escalation rate (% nominal/yr)",
                             "Reference year Non-fuel var cost ($/MWh)",
                             "Reference year Fixed Production cost ($/kW-yr)",
+                            "Reference year Curtailment cost ($/MWh)",
                             "Capital cost ($/kW)"]:
                     if col in mod_cost_df.columns:
                         mod_cost_df[col] = mod_cost_df[col].apply(to_float)
@@ -2302,6 +2373,8 @@ elif page == "🔍 Sensitivity Analysis":
                     "Capital cost ($/kW)":"capex_per_kw",
                     "Reference year Non-fuel var cost ($/MWh)":"nfu_reference",
                     "Reference year Fixed Production cost ($/kW-yr)":"fpu_reference",
+                    "Reference year Curtailment cost ($/MWh)":"curtailment_reference",
+                    "Curtailment cost escalation rate (% nominal/yr)":"curtailment_esc",
                 })
                 
                 # Avoid double-merge if ops_f already contains cost columns: drop overlapping cost columns
@@ -2316,7 +2389,7 @@ elif page == "🔍 Sensitivity Analysis":
                 fuel_price_map_mod = build_fuel_price_map(mod_fuel_df)
 
                 # Clean numerics
-                for col in ["nfu_esc","fpu_esc","nfu_reference","fpu_reference","capex_per_kw"]:
+                for col in ["nfu_esc","fpu_esc","nfu_reference","fpu_reference", "curtailment_reference", "curtailment_esc", "capex_per_kw"]:
                     if col in ops_mod.columns:
                         ops_mod[col] = ops_mod[col].apply(to_float)
 
@@ -2335,6 +2408,9 @@ elif page == "🔍 Sensitivity Analysis":
                     fpu_esc = sdf["fpu_esc"].fillna(0.0).values if "fpu_esc" in sdf.columns else np.zeros(len(sdf))
                     nfu_reference = sdf["nfu_reference"].fillna(0.0).values if "nfu_reference" in sdf.columns else np.zeros(len(sdf))
                     fpu_reference = sdf["fpu_reference"].fillna(0.0).values if "fpu_reference" in sdf.columns else np.zeros(len(sdf))
+                    curtailment_reference = sdf["curtailment_reference"].fillna(0.0).values if "curtailment_reference" in sdf.columns else np.zeros(len(sdf))
+                    curtailment_esc = sdf["curtailment_esc"].fillna(0.0).values if "curtailment_esc" in sdf.columns else np.zeros(len(sdf))
+                    curtailed_MWh = sdf["Curtailed_Energy_MWh"].fillna(0.0).values if "Curtailed_Energy_MWh" in sdf.columns else np.zeros(len(sdf))
                     capex_kw = sdf["capex_per_kw"].fillna(0.0).values if "capex_per_kw" in sdf.columns else np.zeros(len(sdf))
                     cap_cost_year = sdf["Capital cost year"].fillna(np.nan).values if "Capital cost year" in sdf.columns else np.full(len(sdf), np.nan)
                     reference_year = sdf["Reference year"].fillna(2024).values if "Reference year" in sdf.columns else np.full(len(sdf), 2024)
@@ -2374,13 +2450,15 @@ elif page == "🔍 Sensitivity Analysis":
                             fuel_price_y = get_fuel_price(fuel_price_map_mod, carriers[j], yr, cpi_index)
                             nfu_cost_y = escalate(nfu_reference[j] * cpi_factor, nfu_esc[j], years_from_start)
                             fpu_cost_y = escalate(fpu_reference[j] * cpi_factor, fpu_esc[j], years_from_start)
+                            curtailment_cost_y = escalate(curtailment_reference[j] * cpi_factor, curtailment_esc[j], years_from_start)
 
                             cost_fuel = (fuel_MMBtu[j] if repeat_ops_each_year else 0.0) * (fuel_price_y if not pd.isna(fuel_price_y) else 0.0)
                             cost_nfu = (gen_MWh[j] if repeat_ops_each_year else 0.0) * (nfu_cost_y if not pd.isna(nfu_cost_y) else 0.0)
                             cost_fpu = (cap_MW[j] * 1000.0) * (fpu_cost_y if not pd.isna(fpu_cost_y) else 0.0)
+                            cost_curtailment = curtailed_MWh[j] * (curtailment_cost_y if not pd.isna(curtailment_cost_y) else 0.0)
 
                             df_t = discount_factor(r_j, t)
-                            pv_cost_sum += (cost_fuel + cost_nfu + cost_fpu) * df_t
+                            pv_cost_sum += (cost_fuel + cost_nfu + cost_fpu + cost_curtailment) * df_t
                             pv_gen_sum += (gen_MWh[j] if repeat_ops_each_year else 0.0) * df_t
 
                     lcoe = np.nan if pv_gen_sum == 0 else pv_cost_sum / pv_gen_sum
@@ -2643,6 +2721,9 @@ elif page == "⚡ Generator Breakdown":
         capex_kw = sdf["capex_per_kw"].fillna(0.0).values
         cap_cost_year = sdf["Capital cost year"].fillna(np.nan).values if "Capital cost year" in sdf.columns else np.full(len(sdf), np.nan)
         reference_year = sdf["Reference year"].fillna(2024).values if "Reference year" in sdf.columns else np.full(len(sdf), 2024)
+        curtailment_reference = sdf["curtailment_reference"].fillna(0.0).values
+        curtailment_esc = sdf["curtailment_esc"].fillna(0.0).values
+        curtailed_MWh = sdf["Curtailed_Energy_MWh"].fillna(0.0).values if "Curtailed_Energy_MWh" in sdf.columns else np.zeros(len(sdf))
 
         # Aggregate across years using present value methodology (same as main page)
         pv_cost_sum = 0.0
@@ -2686,14 +2767,16 @@ elif page == "⚡ Generator Breakdown":
                 # Non-fuel costs are converted from the reference year to the horizon start.
                 nfu_cost_y = escalate(nfu_reference[j] * cpi_factor, nfu_esc[j], years_from_start)  # $/MWh
                 fpu_cost_y = escalate(fpu_reference[j] * cpi_factor, fpu_esc[j], years_from_start)  # $/kW-yr
+                curtailment_cost_y = escalate(curtailment_reference[j] * cpi_factor, curtailment_esc[j], years_from_start)  # $/MWh
 
                 # Costs for that generator that year
                 cost_fuel = (fuel_MMBtu[j] if repeat_ops_each_year else 0.0) * (fuel_price_y if not pd.isna(fuel_price_y) else 0.0)
                 cost_nfu  = (gen_MWh[j] if repeat_ops_each_year else 0.0) * (nfu_cost_y if not pd.isna(nfu_cost_y) else 0.0)
                 cost_fpu  = (cap_MW[j] * 1000.0) * (fpu_cost_y if not pd.isna(fpu_cost_y) else 0.0)
+                cost_curtailment = curtailed_MWh[j] * (curtailment_cost_y if not pd.isna(curtailment_cost_y) else 0.0)
 
                 df_t = discount_factor(r_j, t)
-                pv_cost_sum += (cost_fuel + cost_nfu + cost_fpu) * df_t
+                pv_cost_sum += (cost_fuel + cost_nfu + cost_fpu + cost_curtailment) * df_t
 
                 # Discounted generation
                 gen_y = (gen_MWh[j] if repeat_ops_each_year else 0.0)
@@ -2738,7 +2821,7 @@ elif page == "⚡ Generator Breakdown":
             gen_name = gen_row["Generator"]
             gen_MWh = gen_row["Total_Generation_MWh"]
             
-            if gen_MWh > 0:  # Only include generators with generation
+            if gen_MWh > 0 or gen_row.get("Curtailed_Energy_MWh", 0) > 0:
                 fuel_MMBtu = gen_row["Fuel_Consumption_MMBtu"]
                 cap_MW = gen_row["Scenario_Capacity_MW"]
                 carrier = str(gen_row["Carrier"])
@@ -2747,6 +2830,9 @@ elif page == "⚡ Generator Breakdown":
                 capex_per_kw = gen_row.get("capex_per_kw", 0)
                 nfu_reference = gen_row.get("nfu_reference", 0)
                 fpu_reference = gen_row.get("fpu_reference", 0)
+                curtailment_reference = gen_row.get("curtailment_reference", 0)
+                curtailment_esc = gen_row.get("curtailment_esc", 0)
+                curtailed_MWh = gen_row.get("Curtailed_Energy_MWh", 0)
                 nfu_esc = gen_row.get("nfu_esc", 0)
                 fpu_esc = gen_row.get("fpu_esc", 0)
                 
@@ -2758,6 +2844,7 @@ elif page == "⚡ Generator Breakdown":
                 pv_fuel_cost = 0.0
                 pv_nonfuel_var_cost = 0.0
                 pv_fixed_cost = 0.0
+                pv_curtailment_cost = 0.0
                 pv_generation = 0.0
                 
                 # Discount rate selection
@@ -2793,17 +2880,20 @@ elif page == "⚡ Generator Breakdown":
                     # Non-fuel costs are converted from the reference year to the horizon start.
                     nfu_cost_y = escalate(nfu_reference * cpi_factor, nfu_esc, years_from_start)  # $/MWh
                     fpu_cost_y = escalate(fpu_reference * cpi_factor, fpu_esc, years_from_start)  # $/kW-yr
+                    curtailment_cost_y = escalate(curtailment_reference * cpi_factor, curtailment_esc, years_from_start)  # $/MWh
                     
                     # Costs for that generator that year
                     cost_fuel = (fuel_MMBtu if repeat_ops_each_year else 0.0) * (fuel_price_y if not pd.isna(fuel_price_y) else 0.0)
                     cost_nfu = (gen_MWh if repeat_ops_each_year else 0.0) * (nfu_cost_y if not pd.isna(nfu_cost_y) else 0.0)
                     cost_fpu = (cap_MW * 1000.0) * (fpu_cost_y if not pd.isna(fpu_cost_y) else 0.0)
+                    cost_curtailment = curtailed_MWh * (curtailment_cost_y if not pd.isna(curtailment_cost_y) else 0.0)
                     
                     # Apply discount factor
                     df_t = discount_factor(r_gen, t)
                     pv_fuel_cost += cost_fuel * df_t
                     pv_nonfuel_var_cost += cost_nfu * df_t
                     pv_fixed_cost += cost_fpu * df_t
+                    pv_curtailment_cost += cost_curtailment * df_t
                     
                     # Discounted generation
                     gen_y = (gen_MWh if repeat_ops_each_year else 0.0)
@@ -2814,7 +2904,8 @@ elif page == "⚡ Generator Breakdown":
                 fuel_lcoe = pv_fuel_cost / pv_generation if pv_generation > 0 else 0
                 nonfuel_var_lcoe = pv_nonfuel_var_cost / pv_generation if pv_generation > 0 else 0
                 fixed_lcoe = pv_fixed_cost / pv_generation if pv_generation > 0 else 0
-                total_lcoe = capital_lcoe + fuel_lcoe + nonfuel_var_lcoe + fixed_lcoe
+                curtailment_lcoe = pv_curtailment_cost / pv_generation if pv_generation > 0 else 0
+                total_lcoe = capital_lcoe + fuel_lcoe + nonfuel_var_lcoe + fixed_lcoe + curtailment_lcoe
                 
                 # Calculate capacity factor (Generation / (Capacity * 8760 hours))
                 capacity_factor_pct = (gen_MWh / (cap_MW * 8760)) * 100 if cap_MW > 0 else 0
@@ -2829,13 +2920,14 @@ elif page == "⚡ Generator Breakdown":
                     'Fuel_Cost': fuel_lcoe,
                     'Non_Fuel_Variable': nonfuel_var_lcoe,
                     'Fixed_Cost': fixed_lcoe,
+                    'Curtailment_Cost': curtailment_lcoe,
                     'Total_LCOE': total_lcoe
                 })
         
         if gen_breakdown_data:
             # Create breakdown dataframe
             breakdown_df = pd.DataFrame(gen_breakdown_data)
-            for col in ['Capital_Cost', 'Fuel_Cost', 'Non_Fuel_Variable', 'Fixed_Cost', 'Total_LCOE']:
+            for col in ['Capital_Cost', 'Fuel_Cost', 'Non_Fuel_Variable', 'Fixed_Cost', 'Curtailment_Cost', 'Total_LCOE']:
                 breakdown_df[col] = breakdown_df[col] * dollar_display_factor
             breakdown_df = breakdown_df.sort_values('Total_LCOE', ascending=False)
             
@@ -2869,6 +2961,13 @@ elif page == "⚡ Generator Breakdown":
                 x=breakdown_df['Generator'],
                 y=breakdown_df['Fixed_Cost'],
                 marker_color='#d62728'
+            ))
+
+            fig.add_trace(go.Bar(
+                name='Curtailment Cost',
+                x=breakdown_df['Generator'],
+                y=breakdown_df['Curtailment_Cost'],
+                marker_color='#9467bd'
             ))
             
             # Update layout for stacked bar chart
@@ -2951,7 +3050,7 @@ elif page == "⚡ Generator Breakdown":
                 display_df['Generation_MWh'] = display_df['Generation_MWh'].round(0).astype(int)
                 display_df['Capacity_MW'] = display_df['Capacity_MW'].round(1)
                 display_df['Capacity_Factor_pct'] = display_df['Capacity_Factor_pct'].round(1)
-                for col in ['Capital_Cost', 'Fuel_Cost', 'Non_Fuel_Variable', 'Fixed_Cost', 'Total_LCOE']:
+                for col in ['Capital_Cost', 'Fuel_Cost', 'Non_Fuel_Variable', 'Fixed_Cost', 'Curtailment_Cost', 'Total_LCOE']:
                     display_df[col] = display_df[col].round(2)
                 
                 # Rename columns for display
@@ -2963,12 +3062,13 @@ elif page == "⚡ Generator Breakdown":
                     'Fuel_Cost': f'Fuel ({dollar_label}/MWh)',
                     'Non_Fuel_Variable': f'Non-Fuel Var ({dollar_label}/MWh)',
                     'Fixed_Cost': f'Fixed ({dollar_label}/MWh)',
+                    'Curtailment_Cost': f'Curtailment ({dollar_label}/MWh)',
                     'Total_LCOE': f'Total LCOE ({dollar_label}/MWh)'
                 })
                 
                 st.dataframe(display_df, use_container_width=True)
         else:
-            st.warning("No generators with positive generation found for this scenario.")
+            st.warning("No generators with positive generation or curtailment found for this scenario.")
     else:
         st.error("Selected scenario not found in data.")
 
