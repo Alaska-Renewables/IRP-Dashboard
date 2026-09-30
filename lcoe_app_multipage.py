@@ -270,8 +270,8 @@ def build_fuel_price_map(fuel_df):
         result[str(fuel)] = series.to_dict()
     return result
 
-def get_fuel_price(fuel_price_map, fuel, year):
-    """Look up the fuel price for a given fuel/year, holding flat outside the table's year range."""
+def get_fuel_price(fuel_price_map, fuel, year, cpi_index=None):
+    """Look up a nominal fuel price, extrapolating the endpoint real price with CPI."""
     prices = fuel_price_map.get(fuel)
     if not prices:
         return np.nan
@@ -281,7 +281,14 @@ def get_fuel_price(fuel_price_map, fuel, year):
     if not years_avail:
         return np.nan
     clipped = min(max(year, years_avail[0]), years_avail[-1])
-    return prices.get(clipped, np.nan)
+    endpoint_price = prices.get(clipped, np.nan)
+    if pd.isna(endpoint_price) or not cpi_index:
+        return endpoint_price
+    endpoint_cpi = cpi_value(cpi_index, clipped)
+    target_cpi = cpi_value(cpi_index, year)
+    if pd.isna(endpoint_cpi) or pd.isna(target_cpi) or endpoint_cpi == 0:
+        return endpoint_price
+    return endpoint_price * target_cpi / endpoint_cpi
 
 def make_default_fuel_df(start_yr=2024, end_yr=2055):
     """Example year-by-year fuel price projections ($/MMBtu), escalated from 2024 base values."""
@@ -1251,7 +1258,7 @@ if page == "📊 Main Results":
     missing_fuel_costs = []
     for carrier in fuel_consuming_carriers:
         prices = fuel_price_map.get(carrier)
-        missing_years = (not prices) or any(pd.isna(get_fuel_price(fuel_price_map, carrier, yr)) for yr in horizon_years)
+        missing_years = (not prices) or any(pd.isna(get_fuel_price(fuel_price_map, carrier, yr, cpi_index)) for yr in horizon_years)
         if missing_years:
             # Find scenarios that use this fuel
             scenarios_using_fuel = ops_f[
@@ -1425,7 +1432,7 @@ if page == "📊 Main Results":
 
                 # Fuel price from year-by-year projection table
                 years_from_2024 = yr - 2024
-                fuel_price_y = get_fuel_price(fuel_price_map, carriers[j], yr)
+                fuel_price_y = get_fuel_price(fuel_price_map, carriers[j], yr, cpi_index)
 
                 # Non-fuel variable and Fixed production escalation anchored to 2024
                 nfu_cost_y = escalate(nfu_2024[j], nfu_esc[j], years_from_2024)  # $/MWh
@@ -2385,7 +2392,7 @@ elif page == "🔍 Sensitivity Analysis":
                             r_j = (global_discount_rate if use_global_discount else gen_disc_rate[j])
 
                             years_from_2024 = yr - 2024
-                            fuel_price_y = get_fuel_price(fuel_price_map_mod, carriers[j], yr)
+                            fuel_price_y = get_fuel_price(fuel_price_map_mod, carriers[j], yr, cpi_index)
                             nfu_cost_y = escalate(nfu_2024[j], nfu_esc[j], years_from_2024)
                             fpu_cost_y = escalate(fpu_2024[j], fpu_esc[j], years_from_2024)
 
@@ -2693,7 +2700,7 @@ elif page == "⚡ Generator Breakdown":
 
                 # Fuel price from year-by-year projection table
                 years_from_2024 = yr - 2024
-                fuel_price_y = get_fuel_price(fuel_price_map, carriers[j], yr)
+                fuel_price_y = get_fuel_price(fuel_price_map, carriers[j], yr, cpi_index)
 
                 # Non-fuel variable and Fixed production escalation anchored to 2024
                 nfu_cost_y = escalate(nfu_2024[j], nfu_esc[j], years_from_2024)  # $/MWh
@@ -2798,7 +2805,7 @@ elif page == "⚡ Generator Breakdown":
                 for t, yr in enumerate(years):
                     # Fuel price from year-by-year projection table
                     years_from_2024 = yr - 2024
-                    fuel_price_y = get_fuel_price(fuel_price_map, carrier, yr)
+                    fuel_price_y = get_fuel_price(fuel_price_map, carrier, yr, cpi_index)
                     
                     # Non-fuel variable and Fixed production escalation anchored to 2024
                     nfu_cost_y = escalate(nfu_2024, nfu_esc, years_from_2024)  # $/MWh
@@ -2986,6 +2993,7 @@ elif page == "⛽ Fuel Price Projections":
     st.markdown("## Fuel Price Projections")
     st.markdown("Year-by-year fuel price inputs ($/MMBtu), as edited in the **Fuel Price Projections** table above. "
                 "Rows within the selected time horizon (start to end year) are highlighted.")
+    st.caption("Outside the input range, the first or last fuel price is held constant in real dollars and increased by the CPI forecast to produce nominal dollars.")
 
     fuel_years = fuel_year_columns(fuel_df)
     if not fuel_years:
