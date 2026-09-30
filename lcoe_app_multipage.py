@@ -3006,21 +3006,44 @@ elif page == "⛽ Fuel Price Projections":
         for col in fuel_cols:
             table_df[col] = table_df[col].apply(to_float)
 
+        input_year_set = set(fuel_years)
+        first_input_year = min(fuel_years)
+        last_input_year = max(fuel_years)
+        display_years = sorted(input_year_set | horizon_years)
+        input_table = table_df.set_index("Year")
+        display_rows = []
+        for year in display_years:
+            is_extrapolated = year < first_input_year or year > last_input_year
+            row = {
+                "Year": year,
+                "Status": "CPI extrapolation" if is_extrapolated else "Input"
+            }
+            for fuel in fuel_cols:
+                if year in input_table.index:
+                    row[fuel] = input_table.loc[year, fuel]
+                else:
+                    row[fuel] = get_fuel_price(fuel_price_map, str(fuel), year, cpi_index)
+            display_rows.append(row)
+        display_table = pd.DataFrame(display_rows)[["Year"] + fuel_cols + ["Status"]]
+
         # -----------------------------
         # Table with time horizon highlighted
         # -----------------------------
         st.markdown("### Fuel Price Table")
 
-        def highlight_horizon_rows(row):
+        def style_fuel_price_row(row):
+            styles = [""] * len(row)
             if row["Year"] in horizon_years:
-                return ["background-color: #fff3b0"] * len(row)
-            return [""] * len(row)
+                styles = ["background-color: #fff3b0"] * len(row)
+            if row["Status"] == "CPI extrapolation":
+                styles = [f"{style}; color: #1f77b4" for style in styles]
+            return styles
 
-        styled_table = table_df.style.apply(highlight_horizon_rows, axis=1).format(
+        styled_table = display_table.style.apply(style_fuel_price_row, axis=1).format(
             {col: "{:.2f}" for col in fuel_cols}
         )
         st.dataframe(styled_table, use_container_width=True)
-        st.caption(f"Highlighted rows ({start_year}–{end_year}) fall within the selected time horizon.")
+        st.caption(f"Highlighted rows ({start_year}–{end_year}) fall within the selected time horizon. Blue text identifies CPI-extrapolated values; black text identifies input rows.")
 
         # -----------------------------
         # Plot with time horizon highlighted
@@ -3035,14 +3058,33 @@ elif page == "⛽ Fuel Price Projections":
 
         if plot_fuels:
             fig_fuel = go.Figure()
-            indexed_table = table_df.set_index("Year").reindex(fuel_years)
             for fuel in plot_fuels:
+                input_plot_years = [year for year in fuel_years if year in display_years]
                 fig_fuel.add_trace(go.Scatter(
-                    x=fuel_years,
-                    y=indexed_table[fuel].tolist(),
+                    x=input_plot_years,
+                    y=[get_fuel_price(fuel_price_map, str(fuel), year, cpi_index) for year in input_plot_years],
                     mode="lines+markers",
-                    name=str(fuel)
+                    name=str(fuel),
+                    line=dict(dash="solid")
                 ))
+
+                before_years = [year for year in display_years if year < first_input_year and year in horizon_years]
+                after_years = [year for year in display_years if year > last_input_year and year in horizon_years]
+                extrap_segments = []
+                if before_years:
+                    extrap_segments.append(before_years + [first_input_year])
+                if after_years:
+                    extrap_segments.append([last_input_year] + after_years)
+                for extrap_years in extrap_segments:
+                    if extrap_years:
+                        fig_fuel.add_trace(go.Scatter(
+                            x=extrap_years,
+                            y=[get_fuel_price(fuel_price_map, str(fuel), year, cpi_index) for year in extrap_years],
+                            mode="lines+markers",
+                            name=f"{fuel} (CPI extrapolation)",
+                            legendgroup=str(fuel),
+                            line=dict(dash="dash")
+                        ))
 
             # Highlight the time horizon as a shaded band
             fig_fuel.add_vrect(
