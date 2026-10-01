@@ -239,6 +239,15 @@ def escalate(value_base, rate, years_elapsed):
         return np.nan
     return float(value_base) * ((1.0 + float(rate)) ** int(years_elapsed))
 
+def format_pct_str(x):
+    """Render an escalation value (fraction or already-a-string) as a '%' display string
+    so the column is always object/string dtype, matching the data_editor TextColumn config."""
+    if pd.isna(x):
+        return ""
+    if isinstance(x, (int, float, np.number)):
+        return f"{float(x) * 100:.2f}%"
+    return str(x).strip()
+
 def discount_factor(rate, years_elapsed):
     """Present-value discount factor for year offset (0-based)."""
     return 1.0 / ((1.0 + float(rate)) ** int(years_elapsed))
@@ -932,6 +941,15 @@ with st.expander("Generator Cost Inputs"):
         on_click=reset_editor_version,
         args=("gen_costs",)
     )
+    # Force escalation-rate columns to string dtype so they stay compatible with TextColumn,
+    # regardless of whether they were loaded as numeric fractions or "x%" strings.
+    for esc_col in [
+        "Non-fuel var cost escalation rate (% nominal/yr)",
+        "Fixed Production escalation rate (% nominal/yr)",
+        "Curtailment cost escalation rate (% nominal/yr)",
+    ]:
+        if esc_col in cost_df.columns:
+            cost_df[esc_col] = cost_df[esc_col].apply(format_pct_str)
     edited_cost = st.data_editor(
         cost_df,
         use_container_width=True,
