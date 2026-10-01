@@ -804,10 +804,20 @@ if st.session_state.fuel_projection_scenario_input not in fuel_scenario_options:
 fuel_projection_scenario = st.session_state.fuel_projection_scenario_input
 fuel_df = fuel_sheets[fuel_projection_scenario].copy()
 
-# Create dynamic editor keys to force refresh after reset
-gen_costs_key = f"gen_costs_{st.session_state.get('reset_counter', 0)}"
-fuel_costs_key = f"fuel_costs_{st.session_state.get('reset_counter', 0)}"
-cpi_costs_key = f"cpi_costs_{st.session_state.get('reset_counter', 0)}"
+# Create independent editor versions so each table can be reset separately.
+for editor_name in ("gen_costs", "fuel_costs", "cpi_costs"):
+    version_key = f"{editor_name}_reset_version"
+    if version_key not in st.session_state:
+        st.session_state[version_key] = 0
+
+def reset_editor_version(editor_name):
+    version_key = f"{editor_name}_reset_version"
+    st.session_state[version_key] += 1
+
+reset_counter = st.session_state.get('reset_counter', 0)
+gen_costs_key = f"gen_costs_{reset_counter}_{st.session_state.gen_costs_reset_version}"
+fuel_costs_key = f"fuel_costs_{reset_counter}_{st.session_state.fuel_costs_reset_version}"
+cpi_costs_key = f"cpi_costs_{reset_counter}_{st.session_state.cpi_costs_reset_version}"
 
 # -----------------------------
 # Wind and Solar Cost Override Options
@@ -916,6 +926,12 @@ if len(fuel_scenario_options) > 1:
 else:
     st.caption(f"Fuel projection scenario: {fuel_projection_scenario}")
 with st.expander("Generator Cost Inputs"):
+    st.button(
+        "↺ Reset to input file",
+        key="reset_generator_cost_inputs",
+        on_click=reset_editor_version,
+        args=("gen_costs",)
+    )
     edited_cost = st.data_editor(
         cost_df,
         use_container_width=True,
@@ -931,9 +947,21 @@ with st.expander("Generator Cost Inputs"):
         }
     )
 with st.expander("Fuel Price Projections ($/MMBtu by year)"):
+    st.button(
+        "↺ Reset to input file",
+        key="reset_fuel_price_projections",
+        on_click=reset_editor_version,
+        args=("fuel_costs",)
+    )
     edited_fuel = st.data_editor(fuel_df, use_container_width=True, num_rows="dynamic", key=fuel_costs_key)
 with st.expander("CPI Inflation Forecast (%/yr)"):
     st.caption("Use one row per year with columns Year and CPI Inflation Rate (%/yr). Values may be entered as 2.5 or 2.5%.")
+    st.button(
+        "↺ Reset to input file",
+        key="reset_cpi_inflation_forecast",
+        on_click=reset_editor_version,
+        args=("cpi_costs",)
+    )
     edited_cpi = st.data_editor(cpi_df, use_container_width=True, num_rows="dynamic", key=cpi_costs_key)
 
 cost_df = edited_cost.copy()
