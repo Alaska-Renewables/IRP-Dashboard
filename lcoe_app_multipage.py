@@ -1699,6 +1699,11 @@ if page == "📊 Main Results":
         # Use the union of all carriers for consistency
         all_carriers = sorted(set(all_carriers_cap + all_carriers_cf + all_carriers_curt + all_carriers_gen))
 
+        # Create a color mapping for consistent colors across all plots
+        import plotly.colors as pc
+        colors = pc.qualitative.Plotly + pc.qualitative.Dark24 + pc.qualitative.Light24
+        color_map = {carrier: colors[i % len(colors)] for i, carrier in enumerate(all_carriers)}
+
         plot_df = res_df[["Scenario","LCOE_$perMWh"]].merge(cap_tbl, on="Scenario").merge(cf_tbl, on="Scenario").merge(curt_tbl, on="Scenario").merge(gen_tbl, on="Scenario")
         
         # Calculate curtailment percentage for each carrier
@@ -1714,6 +1719,81 @@ if page == "📊 Main Results":
         plot_df = plot_df.merge(curt_pct_tbl, on="Scenario")
         
         scenarios_ordered = plot_df["Scenario"].tolist()
+
+        # -----------------------------
+        # Installed Capacity Range for Near-Least-Cost Scenarios
+        # -----------------------------
+        st.markdown("### Installed Capacity Range Near Least-Cost Scenarios")
+        st.markdown("Box plot showing the range (min/max) and average installed capacity by carrier, across scenarios within a selected LCOE range of the least-cost scenario.")
+
+        min_lcoe_main = plot_df["LCOE_$perMWh"].min()
+        main_lcoe_tolerance = st.number_input(
+            f"LCOE tolerance ({dollar_label}/MWh)",
+            min_value=1.0, max_value=200.0, value=10.0, step=1.0,
+            help="Include scenarios with LCOE ≤ (minimum LCOE + tolerance)",
+            key="main_lcoe_tolerance"
+        )
+        main_lcoe_threshold = min_lcoe_main + main_lcoe_tolerance
+        near_least_cost_df = plot_df[plot_df["LCOE_$perMWh"] <= main_lcoe_threshold]
+        included_scenarios = near_least_cost_df["Scenario"].tolist()
+
+        st.caption(f"Including {len(included_scenarios)} of {len(plot_df)} scenarios with LCOE ≤ {main_lcoe_threshold:.2f} {dollar_label}/MWh")
+
+        fig_cap_box = go.Figure()
+        for carrier in all_carriers:
+            cap_col = f"{carrier}_MW"
+            if cap_col not in near_least_cost_df.columns:
+                continue
+            carrier_caps = near_least_cost_df[cap_col]
+            if carrier_caps.empty or carrier_caps.max() == 0:
+                continue
+            cap_min = carrier_caps.min()
+            cap_max = carrier_caps.max()
+            cap_avg = carrier_caps.mean()
+            # Box spans min-max with the median line at the average; fences equal the box edges so no whiskers are drawn
+            fig_cap_box.add_trace(go.Box(
+                x=[carrier],
+                q1=[cap_min], median=[cap_avg], q3=[cap_max],
+                lowerfence=[cap_min], upperfence=[cap_max],
+                boxpoints=False,
+                name=carrier,
+                marker_color=color_map.get(carrier, 'gray'),
+                showlegend=False,
+                customdata=[[cap_min, cap_avg, cap_max]],
+                hovertemplate=f"<b>{carrier}</b><br>Min: %{{customdata[0]:.1f}} MW<br>Avg: %{{customdata[1]:.1f}} MW<br>Max: %{{customdata[2]:.1f}} MW<extra></extra>"
+            ))
+
+        fig_cap_box.update_layout(
+            xaxis_title="Carrier",
+            yaxis_title="Installed Capacity (MW)",
+            height=450
+        )
+        st.plotly_chart(fig_cap_box, use_container_width=True)
+
+        # Project-level detail: which generators are included in the near-least-cost scenarios
+        st.markdown("**Projects Included in Near-Least-Cost Scenarios**")
+        proj_sub = ops_f[ops_f["Scenario"].isin(included_scenarios)].copy()
+        proj_sub["Scenario_Capacity_MW"] = proj_sub["Scenario_Capacity_MW"].fillna(0.0)
+        proj_built = proj_sub[proj_sub["Scenario_Capacity_MW"] > 0]
+        n_included = len(included_scenarios)
+
+        project_rows = []
+        for (carrier, gen), gdf in proj_built.groupby(["Carrier", "Generator"], dropna=False):
+            caps = gdf["Scenario_Capacity_MW"]
+            project_rows.append({
+                "Carrier": carrier,
+                "Generator": gen,
+                "Min Capacity (MW)": round(caps.min(), 1),
+                "Avg Capacity (MW)": round(caps.mean(), 1),
+                "Max Capacity (MW)": round(caps.max(), 1),
+                "% of Scenarios Included": round(len(gdf) / n_included * 100, 1) if n_included else 0.0
+            })
+
+        if project_rows:
+            project_df = pd.DataFrame(project_rows).sort_values(["Carrier", "% of Scenarios Included"], ascending=[True, False]).reset_index(drop=True)
+            st.dataframe(project_df, use_container_width=True)
+        else:
+            st.info("No projects with non-zero capacity found in the selected scenarios.")
 
         # Create numeric x-axis (scenario index)
         x_vals = list(range(len(scenarios_ordered)))
@@ -1743,11 +1823,6 @@ if page == "📊 Main Results":
 
         # Define which carriers should be visible by default
         default_visible_carriers = {"geo", "wind", "solar", "gas"}
-
-        # Create a color mapping for consistent colors across all plots
-        import plotly.colors as pc
-        colors = pc.qualitative.Plotly + pc.qualitative.Dark24 + pc.qualitative.Light24
-        color_map = {carrier: colors[i % len(colors)] for i, carrier in enumerate(all_carriers)}
 
         # 2) Capacity lines
         for k in all_carriers:
@@ -1807,55 +1882,6 @@ if page == "📊 Main Results":
 
         st.markdown("### Scenario Results (ordered by LCOE)")
         st.plotly_chart(fig, use_container_width=True)
-
-        # -----------------------------
-        # Installed Capacity Range for Near-Least-Cost Scenarios
-        # -----------------------------
-        st.markdown("### Installed Capacity Range Near Least-Cost Scenarios")
-        st.markdown("Box plot showing the range (min/max) and average installed capacity by carrier, across scenarios within a selected LCOE range of the least-cost scenario.")
-
-        min_lcoe_main = plot_df["LCOE_$perMWh"].min()
-        main_lcoe_tolerance = st.number_input(
-            f"LCOE tolerance ({dollar_label}/MWh)",
-            min_value=1.0, max_value=200.0, value=10.0, step=1.0,
-            help="Include scenarios with LCOE ≤ (minimum LCOE + tolerance)",
-            key="main_lcoe_tolerance"
-        )
-        main_lcoe_threshold = min_lcoe_main + main_lcoe_tolerance
-        near_least_cost_df = plot_df[plot_df["LCOE_$perMWh"] <= main_lcoe_threshold]
-
-        st.caption(f"Including {len(near_least_cost_df)} of {len(plot_df)} scenarios with LCOE ≤ {main_lcoe_threshold:.2f} {dollar_label}/MWh")
-
-        fig_cap_box = go.Figure()
-        for carrier in all_carriers:
-            cap_col = f"{carrier}_MW"
-            if cap_col not in near_least_cost_df.columns:
-                continue
-            carrier_caps = near_least_cost_df[cap_col]
-            if carrier_caps.empty or carrier_caps.max() == 0:
-                continue
-            cap_min = carrier_caps.min()
-            cap_max = carrier_caps.max()
-            cap_avg = carrier_caps.mean()
-            # Box spans min-max with the median line at the average; fences equal the box edges so no whiskers are drawn
-            fig_cap_box.add_trace(go.Box(
-                x=[carrier],
-                q1=[cap_min], median=[cap_avg], q3=[cap_max],
-                lowerfence=[cap_min], upperfence=[cap_max],
-                boxpoints=False,
-                name=carrier,
-                marker_color=color_map.get(carrier, 'gray'),
-                showlegend=False,
-                hovertext=f"{carrier}<br>Min: {cap_min:.1f} MW<br>Avg: {cap_avg:.1f} MW<br>Max: {cap_max:.1f} MW",
-                hoverinfo='text'
-            ))
-
-        fig_cap_box.update_layout(
-            xaxis_title="Carrier",
-            yaxis_title="Installed Capacity (MW)",
-            height=450
-        )
-        st.plotly_chart(fig_cap_box, use_container_width=True)
 
         # -----------------------------
         # Triangle Plot - Technology Mix Analysis
