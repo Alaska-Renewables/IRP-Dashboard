@@ -1809,6 +1809,55 @@ if page == "📊 Main Results":
         st.plotly_chart(fig, use_container_width=True)
 
         # -----------------------------
+        # Installed Capacity Range for Near-Least-Cost Scenarios
+        # -----------------------------
+        st.markdown("### Installed Capacity Range Near Least-Cost Scenarios")
+        st.markdown("Box plot showing the range (min/max) and average installed capacity by carrier, across scenarios within a selected LCOE range of the least-cost scenario.")
+
+        min_lcoe_main = plot_df["LCOE_$perMWh"].min()
+        main_lcoe_tolerance = st.number_input(
+            f"LCOE tolerance ({dollar_label}/MWh)",
+            min_value=1.0, max_value=200.0, value=10.0, step=1.0,
+            help="Include scenarios with LCOE ≤ (minimum LCOE + tolerance)",
+            key="main_lcoe_tolerance"
+        )
+        main_lcoe_threshold = min_lcoe_main + main_lcoe_tolerance
+        near_least_cost_df = plot_df[plot_df["LCOE_$perMWh"] <= main_lcoe_threshold]
+
+        st.caption(f"Including {len(near_least_cost_df)} of {len(plot_df)} scenarios with LCOE ≤ {main_lcoe_threshold:.2f} {dollar_label}/MWh")
+
+        fig_cap_box = go.Figure()
+        for carrier in all_carriers:
+            cap_col = f"{carrier}_MW"
+            if cap_col not in near_least_cost_df.columns:
+                continue
+            carrier_caps = near_least_cost_df[cap_col]
+            if carrier_caps.empty or carrier_caps.max() == 0:
+                continue
+            cap_min = carrier_caps.min()
+            cap_max = carrier_caps.max()
+            cap_avg = carrier_caps.mean()
+            # Box spans min-max with the median line at the average; fences equal the box edges so no whiskers are drawn
+            fig_cap_box.add_trace(go.Box(
+                x=[carrier],
+                q1=[cap_min], median=[cap_avg], q3=[cap_max],
+                lowerfence=[cap_min], upperfence=[cap_max],
+                boxpoints=False,
+                name=carrier,
+                marker_color=color_map.get(carrier, 'gray'),
+                showlegend=False,
+                hovertext=f"{carrier}<br>Min: {cap_min:.1f} MW<br>Avg: {cap_avg:.1f} MW<br>Max: {cap_max:.1f} MW",
+                hoverinfo='text'
+            ))
+
+        fig_cap_box.update_layout(
+            xaxis_title="Carrier",
+            yaxis_title="Installed Capacity (MW)",
+            height=450
+        )
+        st.plotly_chart(fig_cap_box, use_container_width=True)
+
+        # -----------------------------
         # Triangle Plot - Technology Mix Analysis
         # -----------------------------
         st.markdown("### Technology Mix Analysis")
