@@ -33,14 +33,14 @@ st.sidebar.markdown("## 💾 Configuration Management")
 if 'saved_configs' not in st.session_state:
     st.session_state.saved_configs = {}
 
-def save_current_config(config_name, params, cost_df=None, fuel_df=None, cpi_df=None):
+def save_current_config(config_name, params, cost_df=None, fuel_sheets=None, cpi_df=None):
     """Save current configuration to session state with optional input data."""
     config = {
         'name': config_name,
         'timestamp': datetime.datetime.now().isoformat(),
         'parameters': params.copy(),
         'cost_data': serialize_dataframe_to_json(cost_df),
-        'fuel_data': serialize_dataframe_to_json(fuel_df),
+        'fuel_data': serialize_fuel_scenarios_to_json(fuel_sheets),
         'cpi_data': serialize_dataframe_to_json(cpi_df)
     }
     st.session_state.saved_configs[config_name] = config
@@ -89,6 +89,31 @@ def deserialize_dataframe_from_json(data):
     import io
     csv_buffer = io.StringIO(data['csv_data'])
     return pd.read_csv(csv_buffer)
+
+def serialize_fuel_scenarios_to_json(fuel_sheets):
+    """Serialize every named fuel projection scenario in a configuration."""
+    if not fuel_sheets:
+        return None
+    return {
+        '_type': 'fuel_scenarios_csv',
+        'scenarios': {
+            name: df.to_csv(index=False)
+            for name, df in fuel_sheets.items()
+            if df is not None and not df.empty
+        }
+    }
+
+def deserialize_fuel_scenarios_from_json(data):
+    """Restore named fuel scenarios, including legacy single-table configs."""
+    if not isinstance(data, dict):
+        return None
+    if data.get('_type') == 'fuel_scenarios_csv':
+        return {
+            name: pd.read_csv(io.StringIO(csv_data))
+            for name, csv_data in data.get('scenarios', {}).items()
+        }
+    legacy_fuel_df = deserialize_dataframe_from_json(data)
+    return {'Saved': legacy_fuel_df} if legacy_fuel_df is not None else None
 
 # Configuration save/load interface
 with st.sidebar.expander("🔧 Save & Load Configurations"):
@@ -483,7 +508,7 @@ if 'load_config' in st.session_state:
         if loaded_cost_data is not None:
             st.session_state.loaded_cost_df = deserialize_dataframe_from_json(loaded_cost_data)
         if loaded_fuel_data is not None:
-            st.session_state.loaded_fuel_df = deserialize_dataframe_from_json(loaded_fuel_data)
+            st.session_state.loaded_fuel_sheets = deserialize_fuel_scenarios_from_json(loaded_fuel_data)
         if loaded_cpi_data is not None:
             st.session_state.loaded_cpi_df = deserialize_dataframe_from_json(loaded_cpi_data)
         
@@ -716,8 +741,8 @@ if cost_df is None:
         "Curtailment cost escalation rate (% nominal/yr)":["0%"]*8,
     })
 
-if 'loaded_fuel_df' in st.session_state:
-    fuel_sheets = {"Saved": st.session_state.loaded_fuel_df}
+if 'loaded_fuel_sheets' in st.session_state:
+    fuel_sheets = st.session_state.loaded_fuel_sheets
 else:
     fuel_sheets = load_fuel_scenarios(fuel_file)
 
@@ -749,8 +774,8 @@ cpi_df.columns = [str(c).strip() for c in cpi_df.columns]
 # Clear the loaded dataframes from session state after use
 if 'loaded_cost_df' in st.session_state:
     del st.session_state['loaded_cost_df']
-if 'loaded_fuel_df' in st.session_state:
-    del st.session_state['loaded_fuel_df']
+if 'loaded_fuel_sheets' in st.session_state:
+    del st.session_state['loaded_fuel_sheets']
 if 'loaded_cpi_df' in st.session_state:
     del st.session_state['loaded_cpi_df']
 
@@ -1387,7 +1412,7 @@ if current_config_to_save is not None:
     # Save the complete configuration
     config_name = st.session_state.pending_save
     del st.session_state.pending_save
-    save_current_config(config_name, current_config_to_save, cost_df=cost_df, fuel_df=fuel_df, cpi_df=cpi_df)
+    save_current_config(config_name, current_config_to_save, cost_df=cost_df, fuel_sheets=fuel_sheets, cpi_df=cpi_df)
     st.sidebar.success(f"✅ Configuration saved: {config_name}")
 
 st.title("📊 LCOE Dashboard")
