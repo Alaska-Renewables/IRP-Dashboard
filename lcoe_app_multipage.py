@@ -232,6 +232,7 @@ with st.sidebar.expander("🔧 Save & Load Configurations"):
             del st.session_state['fuel_costs']
         if 'cpi_costs' in st.session_state:
             del st.session_state['cpi_costs']
+        st.session_state.pop('loaded_fuel_sheets', None)
         
         # Set flag to force reload of original data files
         st.session_state.force_data_reload = True
@@ -774,8 +775,6 @@ cpi_df.columns = [str(c).strip() for c in cpi_df.columns]
 # Clear the loaded dataframes from session state after use
 if 'loaded_cost_df' in st.session_state:
     del st.session_state['loaded_cost_df']
-if 'loaded_fuel_sheets' in st.session_state:
-    del st.session_state['loaded_fuel_sheets']
 if 'loaded_cpi_df' in st.session_state:
     del st.session_state['loaded_cpi_df']
 
