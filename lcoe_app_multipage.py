@@ -287,6 +287,17 @@ def capital_recovery_factor(rate, life_years):
         return 1.0 / n
     return (r * (1 + r) ** n) / ((1 + r) ** n - 1)
 
+def levelized_interest(rate, life_years):
+    """Levelized interest per $1 of debt: [1 - n*CRF/(1+r)^(n+1)] * CRF."""
+    r = float(rate)
+    n = int(life_years)
+    crf = capital_recovery_factor(r, n)
+    return (1.0 - n * crf / (1.0 + r) ** (n + 1)) * crf
+
+def tier_fixed_charge_rate(rate, life_years, tier):
+    """Co-op revenue-requirement FCR: CRF + (TIER - 1) * levelized interest."""
+    return capital_recovery_factor(rate, life_years) + (float(tier) - 1.0) * levelized_interest(rate, life_years)
+
 def fuel_year_columns(fuel_df):
     """Return the year values in a Year-row fuel price DataFrame."""
     if "Year" not in fuel_df.columns:
@@ -602,7 +613,13 @@ global_discount_rate = st.sidebar.number_input(
 ) / 100.0
 
 st.sidebar.markdown("**Capital Cost Treatment**")
-capex_treatment_options = ["Upfront (PV in first in-horizon year)", "Annualized (CRF over life)"]
+capex_treatment_options = [
+    "Upfront (PV in first in-horizon year)",
+    "Annualized (CRF over life)",
+    "Debt service only (TIER = 1.0)",
+    "TIER-based (co-op revenue requirement)",
+    "User-entered FCR",
+]
 
 capex_treatment = st.sidebar.selectbox(
     "How to include CAPEX in LCOE?",
@@ -612,11 +629,36 @@ capex_treatment = st.sidebar.selectbox(
 )
 
 asset_life_years = st.sidebar.number_input(
-    "Asset life (years) for annualization", 
+    "Asset life / book life (years) for annualization", 
     min_value=1, max_value=60, 
     value=st.session_state.asset_life_years_input, 
     step=1, key="asset_life_years_input"
 )
+
+# Annual charge as a fraction of overnight capex; charged flat (nominal) over the book life
+capex_annual_rate = None
+if capex_treatment.startswith("Annualized"):
+    capex_annual_rate = capital_recovery_factor(global_discount_rate, asset_life_years)
+elif capex_treatment.startswith(("Debt service", "TIER-based")):
+    debt_rate = st.sidebar.number_input(
+        "Debt interest rate (%)", min_value=0.0, max_value=100.0,
+        value=5.0, step=0.1, key="debt_rate_input"
+    ) / 100.0
+    if capex_treatment.startswith("Debt service"):
+        capex_annual_rate = capital_recovery_factor(debt_rate, asset_life_years)
+    else:
+        tier_value = st.sidebar.number_input(
+            "TIER", min_value=1.0, max_value=10.0,
+            value=1.79, step=0.01, key="tier_input"
+        )
+        capex_annual_rate = tier_fixed_charge_rate(debt_rate, asset_life_years, tier_value)
+elif capex_treatment.startswith("User-entered"):
+    capex_annual_rate = st.sidebar.number_input(
+        "Fixed charge rate, FCR (%)", min_value=0.0, max_value=100.0,
+        value=13.2, step=0.1, key="user_fcr_input"
+    ) / 100.0
+if capex_annual_rate is not None:
+    st.sidebar.caption(f"Annual capital charge rate: {capex_annual_rate * 100:.2f}% of overnight capex")
 
 st.sidebar.markdown("**Dollar Display**")
 dollar_mode = st.sidebar.radio(
@@ -1601,8 +1643,7 @@ if page == "📊 Main Results":
                         df_y0 = discount_factor(r_for_capex, y0_offset)
                         pv_cost_sum += capex_total * df_y0
                     else:
-                        crf = capital_recovery_factor(r_for_capex, asset_life_years)
-                        annual_payment = capex_total * crf
+                        annual_payment = capex_total * capex_annual_rate
                         for yr in years:
                             if yr >= start_incl_year and yr < start_incl_year + asset_life_years:
                                 t = yr - start_year
@@ -2651,8 +2692,7 @@ elif page == "🔍 Sensitivity Analysis":
                                     df_y0 = discount_factor(r_for_capex, y0_offset)
                                     pv_cost_sum += capex_total * df_y0
                                 else:
-                                    crf = capital_recovery_factor(r_for_capex, asset_life_years)
-                                    annual_payment = capex_total * crf
+                                    annual_payment = capex_total * capex_annual_rate
                                     for yr in years:
                                         if yr >= start_incl_year and yr < start_incl_year + asset_life_years:
                                             t = yr - start_year
@@ -2964,8 +3004,7 @@ elif page == "⚡ Generator Breakdown":
                         df_y0 = discount_factor(r_for_capex, y0_offset)
                         pv_cost_sum += capex_total * df_y0
                     else:
-                        crf = capital_recovery_factor(r_for_capex, asset_life_years)
-                        annual_payment = capex_total * crf
+                        annual_payment = capex_total * capex_annual_rate
                         for yr in years:
                             if yr >= start_incl_year and yr < start_incl_year + asset_life_years:
                                 t = yr - start_year
@@ -3081,8 +3120,7 @@ elif page == "⚡ Generator Breakdown":
                             df_y0 = discount_factor(r_gen, y0_offset)
                             pv_capital_cost = capex_total * df_y0
                         else:
-                            crf = capital_recovery_factor(r_gen, asset_life_years)
-                            annual_payment = capex_total * crf
+                            annual_payment = capex_total * capex_annual_rate
                             for yr in years:
                                 if yr >= start_incl_year and yr < start_incl_year + asset_life_years:
                                     t = yr - start_year
