@@ -484,6 +484,8 @@ if fuel_file is not None:
         # Clear fuel cost editor session state to revert to file values
         if 'fuel_costs' in st.session_state:
             del st.session_state['fuel_costs']
+        st.session_state.pop('loaded_fuel_sheets', None)
+        st.session_state.pop('loaded_fuel_sheets_legacy', None)
 
 # Reset CPI editor data when new CPI files are uploaded
 if cpi_file is not None:
@@ -527,6 +529,12 @@ if 'load_config' in st.session_state:
             st.session_state.loaded_cost_df = deserialize_dataframe_from_json(loaded_cost_data)
         if loaded_fuel_data is not None:
             st.session_state.loaded_fuel_sheets = deserialize_fuel_scenarios_from_json(loaded_fuel_data)
+            st.session_state.loaded_fuel_sheets_legacy = (
+                loaded_fuel_data.get('_type') == 'dataframe_csv'
+            )
+        else:
+            st.session_state.pop('loaded_fuel_sheets', None)
+            st.session_state.pop('loaded_fuel_sheets_legacy', None)
         if loaded_cpi_data is not None:
             st.session_state.loaded_cpi_df = deserialize_dataframe_from_json(loaded_cpi_data)
         
@@ -795,7 +803,15 @@ if cost_df is None:
     })
 
 if 'loaded_fuel_sheets' in st.session_state:
-    fuel_sheets = st.session_state.loaded_fuel_sheets
+    fuel_sheets = st.session_state.loaded_fuel_sheets or {}
+    if st.session_state.pop('loaded_fuel_sheets_legacy', False):
+        uploaded_fuel_sheets = load_fuel_scenarios(fuel_file)
+        saved_fuel_df = fuel_sheets.get('Saved')
+        if uploaded_fuel_sheets and saved_fuel_df is not None:
+            saved_scenario = st.session_state.fuel_projection_scenario_input
+            uploaded_fuel_sheets[saved_scenario] = saved_fuel_df
+            fuel_sheets = uploaded_fuel_sheets
+            st.session_state.loaded_fuel_sheets = fuel_sheets
 else:
     fuel_sheets = load_fuel_scenarios(fuel_file)
 
@@ -1000,16 +1016,13 @@ if use_wind_override or use_solar_override:
 
 # Editable cost tables
 st.markdown("### Cost Inputs (editable)")
-if len(fuel_scenario_options) > 1:
-    fuel_projection_scenario = st.selectbox(
-        "Fuel projection scenario",
-        options=fuel_scenario_options,
-        index=fuel_scenario_options.index(st.session_state.fuel_projection_scenario_input),
-        key="fuel_projection_scenario_input"
-    )
-    fuel_df = fuel_sheets[fuel_projection_scenario].copy()
-else:
-    st.caption(f"Fuel projection scenario: {fuel_projection_scenario}")
+fuel_projection_scenario = st.selectbox(
+    "Fuel projection scenario",
+    options=fuel_scenario_options,
+    index=fuel_scenario_options.index(st.session_state.fuel_projection_scenario_input),
+    key="fuel_projection_scenario_input"
+)
+fuel_df = fuel_sheets[fuel_projection_scenario].copy()
 with st.expander("Generator Cost Inputs"):
     st.button(
         "↺ Reset to input file",
