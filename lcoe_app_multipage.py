@@ -528,9 +528,11 @@ if 'load_config' in st.session_state:
         if loaded_cost_data is not None:
             st.session_state.loaded_cost_df = deserialize_dataframe_from_json(loaded_cost_data)
         if loaded_fuel_data is not None:
-            st.session_state.loaded_fuel_sheets = deserialize_fuel_scenarios_from_json(loaded_fuel_data)
+            loaded_fuel_sheets = deserialize_fuel_scenarios_from_json(loaded_fuel_data)
+            st.session_state.loaded_fuel_sheets = loaded_fuel_sheets
             st.session_state.loaded_fuel_sheets_legacy = (
-                loaded_fuel_data.get('_type') == 'dataframe_csv'
+                isinstance(loaded_fuel_sheets, dict)
+                and set(loaded_fuel_sheets) == {'Saved'}
             )
         else:
             st.session_state.pop('loaded_fuel_sheets', None)
