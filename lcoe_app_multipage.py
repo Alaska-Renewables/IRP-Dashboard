@@ -175,7 +175,10 @@ with st.sidebar.expander("🔧 Save & Load Configurations"):
     st.markdown("**Reset to Defaults:**")
     if st.button("🔄 Reset All Filters & Costs", help="Clear all filters and revert to original input file values"):
         # Clear all filter session states to show all scenarios
-        keys_to_remove = [key for key in st.session_state.keys() if key.startswith('filter_multiselect_')]
+        keys_to_remove = [
+            key for key in st.session_state.keys()
+            if key.startswith(('filter_multiselect_', 'carrier_share_'))
+        ]
         for key in keys_to_remove:
             del st.session_state[key]
         
@@ -451,7 +454,10 @@ if ops_file is not None:
     if st.session_state.last_ops_filename != current_ops_filename:
         st.session_state.last_ops_filename = current_ops_filename
         # Clear all filter session states to show all scenarios by default
-        keys_to_remove = [key for key in st.session_state.keys() if key.startswith('filter_multiselect_')]
+        keys_to_remove = [
+            key for key in st.session_state.keys()
+            if key.startswith(('filter_multiselect_', 'carrier_share_'))
+        ]
         for key in keys_to_remove:
             del st.session_state[key]
 
@@ -565,6 +571,10 @@ if 'load_config' in st.session_state:
                 # Convert filter parameter keys to multiselect keys
                 multiselect_key = key.replace('filter_', 'filter_multiselect_')
                 st.session_state[multiselect_key] = value
+
+        st.session_state.carrier_share_carriers = loaded_config.get('carrier_share_carriers', [])
+        st.session_state.carrier_share_condition = loaded_config.get('carrier_share_condition', 'Above')
+        st.session_state.carrier_share_threshold = loaded_config.get('carrier_share_threshold', 10.0)
         
         # Clear the load flag
         del st.session_state.load_config
@@ -1237,6 +1247,38 @@ with st.expander("Filter by parameters (param_*) and Bus"):
             key=multiselect_key
         )
 
+with st.expander("Filter by carrier generation share"):
+    carrier_options = sorted(pd.unique(ops_df["Carrier"].astype(str)))
+    selected_carriers = st.multiselect(
+        "Carriers (combined share)",
+        options=carrier_options,
+        default=[
+            carrier for carrier in st.session_state.get("carrier_share_carriers", [])
+            if carrier in carrier_options
+        ],
+        key="carrier_share_carriers",
+    )
+    share_col1, share_col2 = st.columns(2)
+    with share_col1:
+        share_condition = st.selectbox(
+            "Share is",
+            options=["Above", "Below"],
+            key="carrier_share_condition",
+        )
+    with share_col2:
+        share_threshold = st.number_input(
+            "Threshold (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=10.0,
+            step=1.0,
+            key="carrier_share_threshold",
+        )
+    st.caption(
+        "Selected carriers are combined and compared with each scenario's total generation. "
+        "Comparisons are strict; scenarios with zero total generation are excluded when this filter is active."
+    )
+
 # Note: current_config_to_save is already initialized earlier in the code
 
 # Note: Configuration saving logic moved to after wind/solar override parameters are defined
@@ -1244,6 +1286,33 @@ with st.expander("Filter by parameters (param_*) and Bus"):
 # Apply filters with caching
 ops_f = process_operations_data(ops_df, selected)
 st.caption(f"Filtered rows: {len(ops_f):,} of {len(ops_df):,}")
+
+if selected_carriers:
+    generation_by_carrier = (
+        ops_f.assign(Carrier=ops_f["Carrier"].astype(str))
+        .groupby(["Scenario", "Carrier"])["Total_Generation_MWh"]
+        .sum()
+        .unstack(fill_value=0.0)
+    )
+    total_generation = generation_by_carrier.sum(axis=1)
+    selected_generation = generation_by_carrier.reindex(
+        columns=selected_carriers, fill_value=0.0
+    ).sum(axis=1)
+    generation_share = selected_generation.div(total_generation.where(total_generation != 0))
+    threshold_fraction = share_threshold / 100.0
+    if share_condition == "Above":
+        matching_scenarios = generation_share[generation_share > threshold_fraction].index
+    else:
+        matching_scenarios = generation_share[generation_share < threshold_fraction].index
+
+    scenario_count_before_share_filter = ops_f["Scenario"].nunique()
+    ops_f = ops_f[ops_f["Scenario"].isin(matching_scenarios)].copy()
+    st.caption(
+        f"Carrier share filter: showing {ops_f['Scenario'].nunique():,} of "
+        f"{scenario_count_before_share_filter:,} scenarios where the combined share "
+        f"of {', '.join(selected_carriers)} is {share_condition.lower()} "
+        f"{share_threshold:g}% of total generation."
+    )
 
 # Check for single LBA + Bus filter warning
 if 'Bus' in selected and selected['Bus']:
@@ -1423,6 +1492,9 @@ if current_config_to_save is not None:
     for c in all_filter_cols:
         filter_key = f"filter_{c}"
         current_config_to_save[filter_key] = selected[c]
+    current_config_to_save['carrier_share_carriers'] = selected_carriers
+    current_config_to_save['carrier_share_condition'] = share_condition
+    current_config_to_save['carrier_share_threshold'] = share_threshold
     
     # Add wind override parameters
     current_config_to_save['wind_override_enabled'] = use_wind_override
@@ -1543,7 +1615,9 @@ if page == "📊 Main Results":
     unique_loads = scenario_loads.unique()
     
     # Check if all scenarios have the same system load
-    if len(unique_loads) > 1:
+    if len(unique_loads) == 0:
+        st.info("No scenarios match the selected filters.")
+    elif len(unique_loads) > 1:
         st.warning("⚠️ **Different System Loads Detected**")
         st.markdown("The displayed scenarios have different total system loads, which may make LCOE comparisons misleading.")
         
