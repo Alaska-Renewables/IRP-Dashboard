@@ -738,7 +738,7 @@ def process_operations_data(_ops_df, selected_filters):
     mask = pd.Series(True, index=_ops_df.index)
     for c, choices in selected_filters.items():
         if choices:
-            mask = mask & (_ops_df[c].astype(str).isin(choices))
+            mask = mask & (_ops_df[c].fillna("").astype(str).isin(choices))
     
     return _ops_df[mask].copy()
 
@@ -1183,7 +1183,7 @@ st.markdown("### Filters")
 # Handle filter configuration loading
 filter_defaults = {}
 for c in all_filter_cols:
-    vals = sorted(pd.unique(ops_df[c].astype(str)))
+    vals = sorted(pd.unique(ops_df[c].fillna("").astype(str)))
     # Default to showing ALL values (no filtering) when app first opens
     filter_defaults[f"filter_{c}"] = vals
 
@@ -1194,7 +1194,7 @@ if loaded_config:
         multiselect_key = f"filter_multiselect_{c}"
         if filter_key in loaded_config:
             # Validate that loaded values still exist in current data
-            vals = sorted(pd.unique(ops_df[c].astype(str)))
+            vals = sorted(pd.unique(ops_df[c].fillna("").astype(str)))
             loaded_values = loaded_config[filter_key]
             # Only use values that still exist in current dataset
             valid_values = [v for v in loaded_values if v in vals]
@@ -1207,7 +1207,7 @@ with st.expander("Filter by parameters (param_*) and Bus"):
     
     # Bus filter (if available)
     if 'Bus' in ops_df.columns:
-        vals = sorted(pd.unique(ops_df['Bus'].astype(str)))
+        vals = sorted(pd.unique(ops_df['Bus'].fillna("").astype(str)))
         filter_key = f"filter_Bus"
         multiselect_key = f"filter_multiselect_Bus"
         default_vals = filter_defaults.get(filter_key, vals)
@@ -1234,7 +1234,7 @@ with st.expander("Filter by parameters (param_*) and Bus"):
     
     # Param filters
     for c in param_cols:
-        vals = sorted(pd.unique(ops_df[c].astype(str)))
+        vals = sorted(pd.unique(ops_df[c].fillna("").astype(str)))
         filter_key = f"filter_{c}"
         multiselect_key = f"filter_multiselect_{c}"
         default_vals = filter_defaults.get(filter_key, vals)
@@ -1263,7 +1263,7 @@ with st.expander("Filter by parameters (param_*) and Bus"):
         )
 
 with st.expander("Filter by carrier generation share"):
-    carrier_options = sorted(pd.unique(ops_df["Carrier"].astype(str)))
+    carrier_options = sorted(pd.unique(ops_df["Carrier"].fillna("").astype(str)))
     selected_carriers = st.multiselect(
         "Carriers (combined share)",
         options=carrier_options,
@@ -1332,7 +1332,7 @@ if selected_carriers:
 # Check for single LBA + Bus filter warning
 if 'Bus' in selected and selected['Bus']:
     # Check if Bus filter is active (not showing all buses)
-    all_buses = sorted(pd.unique(ops_df['Bus'].astype(str)))
+    all_buses = sorted(pd.unique(ops_df['Bus'].fillna("").astype(str)))
     bus_filter_active = len(selected['Bus']) < len(all_buses)
     
     # Check if any filtered scenarios have single_LBA = True
